@@ -1,0 +1,5 @@
+[tools]
+go = "1.24"
+
+[tasks]
+build = "go build -o lv main.go"
