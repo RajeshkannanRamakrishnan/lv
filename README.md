@@ -44,6 +44,8 @@ cat app.log | ./lv
 | `/` | Enter filter mode |
 | `Enter` | Apply filter |
 | `Esc` | Clear filter / Cancel |
+| `[` | Set Start Date Filter |
+| `]` | Set End Date Filter |
 | `q` / `Ctrl+c` | Quit |
 
 ## License
