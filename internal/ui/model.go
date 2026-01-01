@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/atotto/clipboard"
 )
 
 var (
@@ -34,7 +35,16 @@ var (
 
 	// JSON Styles
 	jsonKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8be9fd"))
+
+	// Selection Style
+	selectedStyle = lipgloss.NewStyle().Background(lipgloss.Color("#555555")).Foreground(lipgloss.Color("#ffffff"))
 )
+
+type Point struct {
+	X int
+	Y int
+}
+
 
 type InputMode int
 
@@ -63,6 +73,13 @@ type Model struct {
 	showDebug bool
 	regexMode bool
 
+	// Selection
+	rawContent     string // Content without ANSI codes for copying
+	selecting      bool
+	selectionStart *Point
+	selectionEnd   *Point
+
+
 	// Text Filter Storage
 	filterText string
 
@@ -82,6 +99,7 @@ func InitialModel(filename, content string) Model {
 
 	return Model{
 		filename:        filename,
+		rawContent:      content,
 		originalContent: highlighted,
 		content:         highlighted,
 		headerHeight:    3,
@@ -93,8 +111,12 @@ func InitialModel(filename, content string) Model {
 		showInfo:        true,
 		showDebug:       true,
 		regexMode:       false,
+
+		selectionStart:  nil,
+		selectionEnd:    nil,
 	}
 }
+
 
 func (m Model) Init() tea.Cmd {
 	return textinput.Blink
@@ -109,6 +131,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle resize independently
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
 		verticalMarginHeight := m.headerHeight + m.footerHeight
+
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
 			m.viewport.YPosition = m.headerHeight
@@ -119,6 +142,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = msg.Height - verticalMarginHeight
 		}
 	}
+
+	// Handle Mouse Events for Selection
+	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		if msg.Y >= m.headerHeight && msg.Y < m.viewport.Height+m.headerHeight {
+			lineIndex := msg.Y - m.headerHeight + m.viewport.YOffset
+			totalLines := strings.Count(m.content, "\n") + 1
+			if lineIndex >= 0 && lineIndex < totalLines {
+				if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+					m.selecting = true
+					m.selectionStart = &Point{X: msg.X, Y: lineIndex}
+					m.selectionEnd = &Point{X: msg.X, Y: lineIndex}
+					m.updateViewWithSelection()
+				} else if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft && m.selecting {
+					m.selectionEnd = &Point{X: msg.X, Y: lineIndex}
+					m.updateViewWithSelection()
+				} else if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+					m.selecting = false
+				}
+			}
+		}
+	}
+
 
 	// Handle text input if in any input mode
 	if m.inputMode != ModeNormal {
@@ -172,6 +218,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "y":
+
+			if m.selectionStart != nil && m.selectionEnd != nil {
+				start, end := *m.selectionStart, *m.selectionEnd
+				if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+					start, end = end, start
+				}
+
+				lines := strings.Split(m.content, "\n")
+				var selectedLines []string
+
+				for i := start.Y; i <= end.Y && i < len(lines); i++ {
+					line := stripAnsi(lines[i]) // Strip ANSI first
+					runes := []rune(line)
+					
+					startCol := 0
+					if i == start.Y {
+						startCol = start.X
+					}
+					
+					endCol := len(runes)
+					if i == end.Y {
+						endCol = end.X + 1 // Inclusive
+					}
+					
+					// Clamp
+					if startCol < 0 { startCol = 0 }
+					if startCol > len(runes) { startCol = len(runes) }
+					if endCol < 0 { endCol = 0 }
+					if endCol > len(runes) { endCol = len(runes) }
+					
+					if startCol < endCol {
+						selectedLines = append(selectedLines, string(runes[startCol:endCol]))
+					} else {
+                        // Empty line or invalid range
+                        selectedLines = append(selectedLines, "")
+                    }
+				}
+
+				text := strings.Join(selectedLines, "\n")
+				clipboard.WriteAll(text)
+
+				m.selectionStart = nil
+				m.selectionEnd = nil
+				m.updateViewWithSelection()
+			}
+			return m, nil
+
+
+		case "esc":
+			if m.selectionStart != nil {
+				m.selectionStart = nil
+				m.selectionEnd = nil
+				m.updateViewWithSelection()
+				return m, nil
+			}
+			// clear all filters
+			m.filterText = ""
+			m.startDate = nil
+			m.endDate = nil
+			m.applyFilters()
+
+
 		case "/":
 			m.inputMode = ModeFilter
 			m.textInput.Placeholder = "Filter logs..."
@@ -198,12 +307,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.textInput.Focus()
 			return m, textinput.Blink
-		case "esc":
-			// clear all filters
-			m.filterText = ""
-			m.startDate = nil
-			m.endDate = nil
-			m.applyFilters()
 
 		// Advanced Toggles
 		case "1":
@@ -296,8 +399,73 @@ func (m *Model) applyFilters() {
 	}
 
 	m.content = strings.Join(filtered, "\n")
-	m.viewport.SetContent(m.content)
+
+    // Clear selection on filter change
+    m.selectionStart = nil
+    m.selectionEnd = nil
+	m.updateViewWithSelection()
 	m.viewport.YOffset = 0
+}
+
+func (m *Model) updateViewWithSelection() {
+    if m.selectionStart == nil || m.selectionEnd == nil {
+        m.viewport.SetContent(m.content)
+        return
+    }
+    
+    start, end := *m.selectionStart, *m.selectionEnd
+    if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+        start, end = end, start
+    }
+    
+    lines := strings.Split(m.content, "\n")
+    for i := start.Y; i <= end.Y && i < len(lines); i++ {
+        // We need to work with runes directly because stripping ANSI might mess up original colored line indices?
+        // Actually, we want to keep colors OUTSIDE the selection, and OVERRIDE inside the selection.
+        // It's tricky to mix existing highlights with selection. 
+        // Simple approach: Strip ANSI from the ENTIRE line under modification, 
+        // then apply selection style to the substring.
+        // This loses syntax highlighting for the selected line, but acts reliably.
+        
+        line := stripAnsi(lines[i])
+        runes := []rune(line)
+        
+        startCol := 0
+        if i == start.Y {
+            startCol = start.X
+        }
+        
+        endCol := len(runes)
+        if i == end.Y {
+            endCol = end.X + 1
+        }
+        
+        // Clamp
+        if startCol < 0 { startCol = 0 }
+        if startCol > len(runes) { startCol = len(runes) }
+        if endCol < 0 { endCol = 0 }
+        if endCol > len(runes) { endCol = len(runes) }
+        
+        // Rebuild line: Pre + Selected + Post
+        // Note: pre and post have no colors because we stripped ANSI.
+        // Ideally we would retain colors for unselected parts, but that requires parsing ANSI complexity.
+        // User accepted "highlight entire line loses color" before.
+        // This is partial highlighting, partial loss of color is fine.
+        
+        if startCol < endCol {
+            pre := string(runes[:startCol])
+            sel := selectedStyle.Render(string(runes[startCol:endCol]))
+            post := string(runes[endCol:])
+            lines[i] = pre + sel + post
+        }
+    }
+    m.viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+
+func stripAnsi(str string) string {
+	re := regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\x07)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
+	return re.ReplaceAllString(str, "")
 }
 
 func parseDate(s string) (time.Time, error) {
