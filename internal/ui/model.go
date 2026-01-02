@@ -96,6 +96,9 @@ type Model struct {
     following bool
     fileSize  int64
     watcher   *fsnotify.Watcher
+
+    // Folding
+    foldStackTraces bool
 }
 
 func InitialModel(filename, content string) Model {
@@ -143,6 +146,7 @@ func InitialModel(filename, content string) Model {
         following:       false, // Start with follow mode off by default? Or detection?
         fileSize:        fileSize,
         watcher:         watcher,
+        foldStackTraces: false,
 	}
 }
 
@@ -412,6 +416,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             if m.following {
                 m.viewport.GotoBottom()
             }
+        
+        // Toggle Stack Trace Folding
+        case "z":
+            m.foldStackTraces = !m.foldStackTraces
+            m.applyFilters()
 		}
 
 	}
@@ -486,8 +495,47 @@ func (m *Model) applyFilters() {
 
 		filtered = append(filtered, line)
 	}
-
-	m.content = strings.Join(filtered, "\n")
+    
+    // Stack Trace Folding Logic
+    // If not folding, we just proceed.
+    // If folding, we process the 'filtered' list again (or ideally during initial pass, but separation is cleaner for MVP).
+    if m.foldStackTraces {
+        var folded []string
+        var traceBuffer []string
+        
+        flushTrace := func() {
+            if len(traceBuffer) > 0 {
+                // Heuristic: If just 1 line, don't fold.
+                if len(traceBuffer) == 1 {
+                    folded = append(folded, traceBuffer...)
+                } else {
+                    // Fold!
+                    summary := fmt.Sprintf("  [+] %d lines folded (stack trace/indented block)...", len(traceBuffer))
+                    // Style it?
+                    summary = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true).Render(summary)
+                    folded = append(folded, summary)
+                }
+                traceBuffer = nil
+            }
+        }
+        
+        for _, line := range filtered {
+            // Check for indentation (heuristic for stack trace)
+            // TAB or at least 2 spaces
+            isIndented := strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "  ")
+            
+            if isIndented {
+                traceBuffer = append(traceBuffer, line)
+            } else {
+                flushTrace()
+                folded = append(folded, line)
+            }
+        }
+        flushTrace()
+        m.content = strings.Join(folded, "\n")
+    } else {
+        m.content = strings.Join(filtered, "\n")
+    }
 
     // Clear selection on filter change
     m.selectionStart = nil
