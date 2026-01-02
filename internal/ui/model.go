@@ -94,14 +94,14 @@ func InitialModel(filename, content string) Model {
 	ti.CharLimit = 156
 	ti.Width = 20
 
-	// Apply highlighting initially
-	highlighted := highlightLog(content)
+	// Highlighting will be applied lazily in View()
+    // highlighted := highlightLog(content)
 
 	return Model{
 		filename:        filename,
 		rawContent:      content,
-		originalContent: highlighted,
-		content:         highlighted,
+		originalContent: content, // No longer highlighted initially
+		content:         content, // No longer highlighted initially
 		headerHeight:    3,
 		footerHeight:    3,
 		textInput:       ti,
@@ -154,10 +154,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selecting = true
 					m.selectionStart = &Point{X: msg.X, Y: lineIndex}
 					m.selectionEnd = &Point{X: msg.X, Y: lineIndex}
-					m.updateViewWithSelection()
+					// View update happens automatically on re-render
 				} else if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft && m.selecting {
 					m.selectionEnd = &Point{X: msg.X, Y: lineIndex}
-					m.updateViewWithSelection()
+					// View update happens automatically on re-render
 				} else if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
 					m.selecting = false
 				}
@@ -262,7 +262,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				m.selectionStart = nil
 				m.selectionEnd = nil
-				m.updateViewWithSelection()
 			}
 			return m, nil
 
@@ -271,7 +270,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selectionStart != nil {
 				m.selectionStart = nil
 				m.selectionEnd = nil
-				m.updateViewWithSelection()
 				return m, nil
 			}
 			// clear all filters
@@ -403,64 +401,99 @@ func (m *Model) applyFilters() {
     // Clear selection on filter change
     m.selectionStart = nil
     m.selectionEnd = nil
-	m.updateViewWithSelection()
+	m.viewport.SetContent(m.content)
 	m.viewport.YOffset = 0
 }
 
-func (m *Model) updateViewWithSelection() {
-    if m.selectionStart == nil || m.selectionEnd == nil {
-        m.viewport.SetContent(m.content)
-        return
+func (m Model) View() string {
+	if !m.ready {
+		return "\n  Initializing..."
+	}
+    
+    // Lazy Rendering Logic
+    // 1. Get visible raw text from viewport
+    visibleText := m.viewport.View()
+    visibleLines := strings.Split(visibleText, "\n")
+    
+    // 2. Iterate and apply highlighting/selection
+    var renderedLines []string
+    for i, line := range visibleLines {
+        // Calculate real line index in the full content
+        realLineIndex := m.viewport.YOffset + i
+        
+        // 1. Syntax Highlighting (Lazy)
+        // We use a helper that processes just one line
+        line = highlightLine(line)
+        
+        // 2. Selection Highlighting (Lazy)
+        if m.selectionStart != nil && m.selectionEnd != nil {
+            start, end := *m.selectionStart, *m.selectionEnd
+            if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+                start, end = end, start
+            }
+            
+            // Check intersection
+            if realLineIndex >= start.Y && realLineIndex <= end.Y {
+                // Strip ANSI if we are going to modify the string based on indices
+                // to avoid index misalignment.
+                cleanLine := stripAnsi(line)
+                runes := []rune(cleanLine)
+                
+                startCol := 0
+                if realLineIndex == start.Y {
+                    startCol = start.X
+                }
+                
+                endCol := len(runes)
+                if realLineIndex == end.Y {
+                    endCol = end.X + 1
+                }
+                
+                // Clamp
+                if startCol < 0 { startCol = 0 }
+                if startCol > len(runes) { startCol = len(runes) }
+                if endCol < 0 { endCol = 0 }
+                if endCol > len(runes) { endCol = len(runes) }
+                
+                if startCol < endCol {
+                    pre := string(runes[:startCol])
+                    sel := selectedStyle.Render(string(runes[startCol:endCol]))
+                    post := string(runes[endCol:])
+                    line = pre + sel + post
+                }
+            }
+        }
+        renderedLines = append(renderedLines, line)
     }
     
-    start, end := *m.selectionStart, *m.selectionEnd
-    if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
-        start, end = end, start
-    }
-    
-    lines := strings.Split(m.content, "\n")
-    for i := start.Y; i <= end.Y && i < len(lines); i++ {
-        // We need to work with runes directly because stripping ANSI might mess up original colored line indices?
-        // Actually, we want to keep colors OUTSIDE the selection, and OVERRIDE inside the selection.
-        // It's tricky to mix existing highlights with selection. 
-        // Simple approach: Strip ANSI from the ENTIRE line under modification, 
-        // then apply selection style to the substring.
-        // This loses syntax highlighting for the selected line, but acts reliably.
-        
-        line := stripAnsi(lines[i])
-        runes := []rune(line)
-        
-        startCol := 0
-        if i == start.Y {
-            startCol = start.X
-        }
-        
-        endCol := len(runes)
-        if i == end.Y {
-            endCol = end.X + 1
-        }
-        
-        // Clamp
-        if startCol < 0 { startCol = 0 }
-        if startCol > len(runes) { startCol = len(runes) }
-        if endCol < 0 { endCol = 0 }
-        if endCol > len(runes) { endCol = len(runes) }
-        
-        // Rebuild line: Pre + Selected + Post
-        // Note: pre and post have no colors because we stripped ANSI.
-        // Ideally we would retain colors for unselected parts, but that requires parsing ANSI complexity.
-        // User accepted "highlight entire line loses color" before.
-        // This is partial highlighting, partial loss of color is fine.
-        
-        if startCol < endCol {
-            pre := string(runes[:startCol])
-            sel := selectedStyle.Render(string(runes[startCol:endCol]))
-            post := string(runes[endCol:])
-            lines[i] = pre + sel + post
-        }
-    }
-    m.viewport.SetContent(strings.Join(lines, "\n"))
+    // Join rendered lines
+    finalContent := strings.Join(renderedLines, "\n")
+
+	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), finalContent, m.footerView())
 }
+
+// Replaces highlightLog (single line version)
+func highlightLine(line string) string {
+    // JSON Pretty Print Check
+    if strings.HasPrefix(strings.TrimSpace(line), "{") && strings.HasSuffix(strings.TrimSpace(line), "}") {
+        var js map[string]interface{}
+        if json.Unmarshal([]byte(line), &js) == nil {
+            return colorizeJSON(line)
+        }
+    }
+
+    if strings.Contains(line, "ERROR") {
+        return strings.Replace(line, "ERROR", errorStyle.Render("ERROR"), 1)
+    } else if strings.Contains(line, "WARN") {
+        return strings.Replace(line, "WARN", warnStyle.Render("WARN"), 1)
+    } else if strings.Contains(line, "INFO") {
+        return strings.Replace(line, "INFO", infoStyleLog.Render("INFO"), 1)
+    } else if strings.Contains(line, "DEBUG") {
+        return strings.Replace(line, "DEBUG", debugStyle.Render("DEBUG"), 1)
+    }
+    return line
+}
+
 
 
 func stripAnsi(str string) string {
@@ -502,31 +535,7 @@ func extractDate(line string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func highlightLog(content string) string {
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		// JSON Pretty Print
-		if strings.HasPrefix(strings.TrimSpace(line), "{") && strings.HasSuffix(strings.TrimSpace(line), "}") {
-			var js map[string]interface{}
-			if json.Unmarshal([]byte(line), &js) == nil {
-				line = colorizeJSON(line)
-			}
-		}
 
-		if strings.Contains(line, "ERROR") {
-			lines[i] = strings.Replace(line, "ERROR", errorStyle.Render("ERROR"), 1)
-		} else if strings.Contains(line, "WARN") {
-			lines[i] = strings.Replace(line, "WARN", warnStyle.Render("WARN"), 1)
-		} else if strings.Contains(line, "INFO") {
-			lines[i] = strings.Replace(line, "INFO", infoStyleLog.Render("INFO"), 1)
-		} else if strings.Contains(line, "DEBUG") {
-			lines[i] = strings.Replace(line, "DEBUG", debugStyle.Render("DEBUG"), 1)
-		} else {
-			lines[i] = line
-		}
-	}
-	return strings.Join(lines, "\n")
-}
 
 func colorizeJSON(s string) string {
 	re := regexp.MustCompile(`"([^"]+)":`)
@@ -535,12 +544,7 @@ func colorizeJSON(s string) string {
 	})
 }
 
-func (m Model) View() string {
-	if !m.ready {
-		return "\n  Initializing..."
-	}
-	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
-}
+
 
 func (m Model) headerView() string {
 	title := titleStyle.Render(m.filename)
