@@ -61,6 +61,9 @@ type Model struct {
 	originalContent string
 	content         string
 	filename        string
+    xOffset         int
+    screenWidth     int
+    wrap            bool
 	ready           bool
 	headerHeight    int
 	footerHeight    int
@@ -114,6 +117,9 @@ func InitialModel(filename, content string) Model {
 
 		selectionStart:  nil,
 		selectionEnd:    nil,
+        xOffset:         0,
+        screenWidth:     0,
+        wrap:            false,
 	}
 }
 
@@ -129,18 +135,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	)
 
 	// Handle resize independently
+	// Handle resize independently
+	// Handle resize independently
 	if msg, ok := msg.(tea.WindowSizeMsg); ok {
 		verticalMarginHeight := m.headerHeight + m.footerHeight
+        m.screenWidth = msg.Width
 
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
 			m.viewport.YPosition = m.headerHeight
+            m.viewport.Width = 20000 // Virtual width to avoid clipping
+            // Only set content AFTER setting width to avoid initial wrapping? 
+            // Actually New() sets width. We overwrite it.
 			m.viewport.SetContent(m.content)
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width
+			m.viewport.Width = 20000 // Keep it wide
 			m.viewport.Height = msg.Height - verticalMarginHeight
 		}
+        
+        // Return early to avoid m.viewport.Update(msg) resetting Width to msg.Width
+        return m, nil 
 	}
 
 	// Handle Mouse Events for Selection
@@ -148,15 +163,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Y >= m.headerHeight && msg.Y < m.viewport.Height+m.headerHeight {
 			lineIndex := msg.Y - m.headerHeight + m.viewport.YOffset
+            logicalX := msg.X + m.xOffset
 			totalLines := strings.Count(m.content, "\n") + 1
 			if lineIndex >= 0 && lineIndex < totalLines {
 				if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 					m.selecting = true
-					m.selectionStart = &Point{X: msg.X, Y: lineIndex}
-					m.selectionEnd = &Point{X: msg.X, Y: lineIndex}
+					m.selectionStart = &Point{X: logicalX, Y: lineIndex}
+					m.selectionEnd = &Point{X: logicalX, Y: lineIndex}
 					// View update happens automatically on re-render
 				} else if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft && m.selecting {
-					m.selectionEnd = &Point{X: msg.X, Y: lineIndex}
+					m.selectionEnd = &Point{X: logicalX, Y: lineIndex}
 					// View update happens automatically on re-render
 				} else if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
 					m.selecting = false
@@ -164,6 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+
 
 
 	// Handle text input if in any input mode
@@ -322,7 +339,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+r":
 			m.regexMode = !m.regexMode
 			m.applyFilters() // Re-apply to update regex usage
+        
+        // Horizontal Scrolling
+        case "right", "l":
+            m.xOffset += 5
+        case "left", "h":
+            m.xOffset -= 5
+            if m.xOffset < 0 {
+                m.xOffset = 0
+            }
+        
+        // Toggle Word Wrap
+        case "w":
+            m.wrap = !m.wrap
 		}
+
 	}
 
 	m.viewport, cmd = m.viewport.Update(msg)
@@ -425,45 +456,123 @@ func (m Model) View() string {
         // We use a helper that processes just one line
         line = highlightLine(line)
         
-        // 2. Selection Highlighting (Lazy)
-        if m.selectionStart != nil && m.selectionEnd != nil {
-            start, end := *m.selectionStart, *m.selectionEnd
-            if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
-                start, end = end, start
-            }
-            
-            // Check intersection
-            if realLineIndex >= start.Y && realLineIndex <= end.Y {
-                // Strip ANSI if we are going to modify the string based on indices
-                // to avoid index misalignment.
-                cleanLine := stripAnsi(line)
-                runes := []rune(cleanLine)
-                
-                startCol := 0
-                if realLineIndex == start.Y {
-                    startCol = start.X
+        // 2. Wrap vs Horizontal Scroll
+        if m.wrap {
+             // WRAP MODE
+             // We render the FULL highlighted line, wrapped to screen width.
+             // Selection could be applied here?
+             
+             // Complex Selection in Unwrap is hard because logical X jumps.
+             // For MVP, applying selection logic logically to the unwrapped string works best.
+             // lipgloss/wordwrap usually preserves background color?
+             
+             // 1. Apply Selection to full line if applicable
+             if m.selectionStart != nil && m.selectionEnd != nil {
+                 start, end := *m.selectionStart, *m.selectionEnd
+                 if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+                     start, end = end, start
+                 }
+                  if realLineIndex >= start.Y && realLineIndex <= end.Y {
+                      cleanLine := stripAnsi(line)
+                      runes := []rune(cleanLine)
+                      
+                      startCol := 0
+                      if realLineIndex == start.Y {
+                          startCol = start.X
+                      }
+                      
+                      endCol := len(runes)
+                      if realLineIndex == end.Y {
+                          endCol = end.X + 1
+                      }
+                      
+                      if startCol < 0 { startCol = 0 }
+                      if startCol > len(runes) { startCol = len(runes) }
+                      if endCol < 0 { endCol = 0 }
+                      if endCol > len(runes) { endCol = len(runes) }
+                      
+                      if startCol < endCol {
+                          pre := string(runes[:startCol])
+                          sel := selectedStyle.Render(string(runes[startCol:endCol]))
+                          post := string(runes[endCol:])
+                          line = pre + sel + post
+                      }
+                  }
+             }
+
+             // 2. Wrap the fully styled string
+             // Note: using m.screenWidth - constant for margin/padding if any.
+             // Viewport width is usually correct for inner content if set right.
+             // We use m.screenWidth as a fallback or m.viewport.Width if checking raw terminal size. 
+             // But m.viewport.Width is 20000. So we must use m.screenWidth!
+             
+             width := m.screenWidth
+             if width <= 0 { width = 80 } // safety
+             
+             // lipgloss's Style.Width() with Render() handles wrapping and ANSI codes.
+             wrapped := lipgloss.NewStyle().Width(width).Render(line)
+             renderedLines = append(renderedLines, wrapped)
+
+        } else {
+                // NO WRAP / HORIZONTAL SCROLL MODE
+        
+                // Convert to runes for safe slicing
+                rawLine := visibleLines[i]
+                rawRunes := []rune(rawLine)
+
+                if m.xOffset < len(rawRunes) {
+                     end := m.xOffset + m.screenWidth
+                     if end > len(rawRunes) {
+                         end = len(rawRunes)
+                     }
+                     // Store the visible slice
+                     visiblePart := string(rawRunes[m.xOffset : end])
+
+                     // Highlight visible part
+                     line = highlightLine(visiblePart)
+
+                     // 2. Selection Highlighting (Lazy)
+                     if m.selectionStart != nil && m.selectionEnd != nil {
+                         start, end := *m.selectionStart, *m.selectionEnd
+                         if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+                             start, end = end, start
+                         }
+
+                         // Check intersection
+                         if realLineIndex >= start.Y && realLineIndex <= end.Y {
+                             
+                             // Adjust X to visual
+                              visStart := 0
+                              if realLineIndex == start.Y {
+                                  visStart = start.X - m.xOffset
+                              }
+                              visEnd := len([]rune(visiblePart)) // default end of line
+                              if realLineIndex == end.Y {
+                                  visEnd = end.X + 1 - m.xOffset
+                              }
+                              
+                              // Clamp to 0..len
+                              if visStart < 0 { visStart = 0 }
+                              if visStart > len([]rune(visiblePart)) { visStart = len([]rune(visiblePart)) }
+                              if visEnd < 0 { visEnd = 0 }
+                              if visEnd > len([]rune(visiblePart)) { visEnd = len([]rune(visiblePart)) }
+                              
+                              if visStart < visEnd {
+                                  vpRunes := []rune(stripAnsi(line)) // Remove syntax colors to apply selection cleanly
+                                  pre := string(vpRunes[:visStart])
+                                  sel := selectedStyle.Render(string(vpRunes[visStart:visEnd]))
+                                  post := string(vpRunes[visEnd:])
+                                  line = pre + sel + post
+                              }
+                         }
+                     }
+                } else {
+                     line = "" // Scrolled past end
                 }
-                
-                endCol := len(runes)
-                if realLineIndex == end.Y {
-                    endCol = end.X + 1
-                }
-                
-                // Clamp
-                if startCol < 0 { startCol = 0 }
-                if startCol > len(runes) { startCol = len(runes) }
-                if endCol < 0 { endCol = 0 }
-                if endCol > len(runes) { endCol = len(runes) }
-                
-                if startCol < endCol {
-                    pre := string(runes[:startCol])
-                    sel := selectedStyle.Render(string(runes[startCol:endCol]))
-                    post := string(runes[endCol:])
-                    line = pre + sel + post
-                }
-            }
+        
+                renderedLines = append(renderedLines, line)
         }
-        renderedLines = append(renderedLines, line)
+
     }
     
     // Join rendered lines
@@ -471,6 +580,7 @@ func (m Model) View() string {
 
 	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), finalContent, m.footerView())
 }
+
 
 // Replaces highlightLog (single line version)
 func highlightLine(line string) string {
