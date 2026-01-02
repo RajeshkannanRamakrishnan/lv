@@ -14,6 +14,8 @@ import (
 	"github.com/atotto/clipboard"
     "github.com/fsnotify/fsnotify"
     "os"
+    "sort"
+    "math"
 )
 
 var (
@@ -99,6 +101,10 @@ type Model struct {
 
     // Folding
     foldStackTraces bool
+
+    // Timeline
+    showTimeline     bool
+    timelineViewport viewport.Model
 }
 
 func InitialModel(filename, content string) Model {
@@ -147,6 +153,7 @@ func InitialModel(filename, content string) Model {
         fileSize:        fileSize,
         watcher:         watcher,
         foldStackTraces: false,
+        showTimeline:    false,
 	}
 }
 
@@ -421,12 +428,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         case "z":
             m.foldStackTraces = !m.foldStackTraces
             m.applyFilters()
+            
+        // Toggle Timeline
+        case "t":
+            m.showTimeline = !m.showTimeline
+            if m.showTimeline {
+                m.generateTimeline()
+                // Initialize timeline viewport if not ready
+                if m.timelineViewport.Height == 0 {
+                    m.timelineViewport = viewport.New(m.screenWidth, m.viewport.Height)
+                    m.timelineViewport.YPosition = m.headerHeight
+                }
+                m.timelineViewport.Width = m.screenWidth
+                m.timelineViewport.Height = m.viewport.Height // Overlay same size
+            }
 		}
 
 	}
 
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
+    
+    // Timeline viewport update
+    if m.showTimeline {
+        m.timelineViewport, cmd = m.timelineViewport.Update(msg)
+        cmds = append(cmds, cmd)
+    }
 
 	return m, tea.Batch(cmds...)
 }
@@ -683,10 +710,104 @@ func (m Model) View() string {
 
     }
     
-    // Join rendered lines
+// Join rendered lines
     finalContent := strings.Join(renderedLines, "\n")
+    
+    currentView := finalContent
+    if m.showTimeline {
+        currentView = m.timelineViewport.View()
+    }
 
-	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), finalContent, m.footerView())
+	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), currentView, m.footerView())
+}
+
+func (m *Model) generateTimeline() {
+    // 1. Extract timestamps
+    var timestamps []time.Time
+    lines := strings.Split(m.content, "\n")
+    for _, line := range lines {
+        if t, ok := extractDate(line); ok {
+            timestamps = append(timestamps, t)
+        }
+    }
+    
+    if len(timestamps) == 0 {
+        m.timelineViewport.SetContent("\n  No timestamps found in current view.")
+        return
+    }
+    
+    sort.Slice(timestamps, func(i, j int) bool {
+        return timestamps[i].Before(timestamps[j])
+    })
+    
+    minTime := timestamps[0]
+    maxTime := timestamps[len(timestamps)-1]
+    
+    duration := maxTime.Sub(minTime)
+    
+    // Determine interval
+    var interval time.Duration
+    var format string
+    
+    if duration < time.Hour {
+        interval = time.Minute
+        format = "15:04"
+    } else if duration < 24*time.Hour {
+        interval = 15 * time.Minute // 15 mins
+        format = "15:04"
+    } else {
+        interval = time.Hour
+        format = "02 Jan 15:04"
+    }
+    
+    // Create buckets
+    // Map bucket start time -> count
+    buckets := make(map[int64]int)
+    var maxCount int
+    
+    for _, t := range timestamps {
+        bucket := t.Truncate(interval).Unix()
+        buckets[bucket]++
+        if buckets[bucket] > maxCount {
+            maxCount = buckets[bucket]
+        }
+    }
+    
+    // Render Bars
+    var out strings.Builder
+    out.WriteString(fmt.Sprintf("\n  Log Volume Analysis (%s - %s)\n", minTime.Format(format), maxTime.Format(format)))
+    out.WriteString(fmt.Sprintf("  Total Logs: %d | Interval: %s\n\n", len(timestamps), interval))
+    
+    // Iterate from start to end by interval
+    // Limit to ~50-100 bars to prevent massive output
+    // Actually, viewport handles unlimited height.
+    
+    startUnix := minTime.Truncate(interval).Unix()
+    endUnix := maxTime.Truncate(interval).Unix()
+    
+    // Safe guard against infinite loop if interval is 0 (shouldn't happen)
+    if interval == 0 { interval = time.Minute }
+    
+    barWidth := 50
+    
+    for t := startUnix; t <= endUnix; t += int64(interval.Seconds()) {
+        count := buckets[t]
+        
+        // Normalize bar length
+        barLen := 0
+        if maxCount > 0 {
+            barLen = int(math.Ceil(float64(count) / float64(maxCount) * float64(barWidth)))
+        }
+        
+        bar := strings.Repeat("█", barLen) 
+        // Pad with spaces
+        // bar += strings.Repeat(" ", barWidth - barLen)
+        
+        timeLabel := time.Unix(t, 0).Format(format)
+        out.WriteString(fmt.Sprintf("  %s │ %s (%d)\n", timeLabel, bar, count))
+    }
+    
+    m.timelineViewport.SetContent(out.String())
 }
 
 
