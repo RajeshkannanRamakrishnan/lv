@@ -105,6 +105,9 @@ type Model struct {
     // Timeline
     showTimeline     bool
     timelineViewport viewport.Model
+
+    // Bookmarks
+    bookmarks map[int]struct{}
 }
 
 func InitialModel(filename, content string) Model {
@@ -154,6 +157,7 @@ func InitialModel(filename, content string) Model {
         watcher:         watcher,
         foldStackTraces: false,
         showTimeline:    false,
+        bookmarks:       make(map[int]struct{}),
 	}
 }
 
@@ -442,6 +446,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 m.timelineViewport.Width = m.screenWidth
                 m.timelineViewport.Height = m.viewport.Height // Overlay same size
             }
+        
+        // Bookmarks
+        case "m":
+             // Toggle bookmark at current YOffset (top visible line)
+             // Or selection? Usually "mark current line".
+             // We use m.viewport.YOffset.
+             row := m.viewport.YOffset
+             if _, exists := m.bookmarks[row]; exists {
+                 delete(m.bookmarks, row)
+             } else {
+                 m.bookmarks[row] = struct{}{}
+             }
+             
+        case "n":
+             // Jump to next bookmark > current YOffset
+             start := m.viewport.YOffset + 1
+             next := -1
+             minDist := int(^uint(0) >> 1)
+             
+             for row := range m.bookmarks {
+                 if row >= start {
+                     dist := row - start
+                     if dist < minDist {
+                         minDist = dist
+                         next = row
+                     }
+                 }
+             }
+             
+             if next != -1 {
+                 m.viewport.YOffset = next
+             }
+             
+        case "N":
+             // Jump to prev bookmark < current YOffset
+             start := m.viewport.YOffset - 1
+             prev := -1
+             minDist := int(^uint(0) >> 1)
+             
+             for row := range m.bookmarks {
+                 if row <= start {
+                     dist := start - row
+                     if dist < minDist {
+                         minDist = dist
+                         prev = row
+                     }
+                 }
+             }
+             
+             if prev != -1 {
+                 m.viewport.YOffset = prev
+             }
 		}
 
 	}
@@ -567,6 +623,9 @@ func (m *Model) applyFilters() {
     // Clear selection on filter change
     m.selectionStart = nil
     m.selectionEnd = nil
+    // Clear bookmarks on filter change? indices are invalid.
+    m.bookmarks = make(map[int]struct{}) 
+    
 	m.viewport.SetContent(m.content)
 	m.viewport.YOffset = 0
 }
@@ -587,19 +646,21 @@ func (m Model) View() string {
         // Calculate real line index in the full content
         realLineIndex := m.viewport.YOffset + i
         
-        // 1. Syntax Highlighting (Lazy)
-        // We use a helper that processes just one line
-        line = highlightLine(line)
+        isBookmarked := false
+        if _, ok := m.bookmarks[realLineIndex]; ok {
+            isBookmarked = true
+        }
+        
+        // 1. Syntax Highlighting (Lazy) is done per visible part usually,
+        // but for wrap we do it on full line first.
         
         // 2. Wrap vs Horizontal Scroll
         if m.wrap {
              // WRAP MODE
-             // We render the FULL highlighted line, wrapped to screen width.
-             // Selection could be applied here?
-             
-             // Complex Selection in Unwrap is hard because logical X jumps.
-             // For MVP, applying selection logic logically to the unwrapped string works best.
-             // lipgloss/wordwrap usually preserves background color?
+             line = highlightLine(line)
+             if isBookmarked {
+                 line = "🔖 " + line
+             }
              
              // 1. Apply Selection to full line if applicable
              if m.selectionStart != nil && m.selectionEnd != nil {
@@ -609,6 +670,16 @@ func (m Model) View() string {
                  }
                   if realLineIndex >= start.Y && realLineIndex <= end.Y {
                       cleanLine := stripAnsi(line)
+                      if isBookmarked {
+                          // Selection logic needs to account for added prefix?
+                          // Visual selection usually on content.
+                          // Simplest: Don't highlight the bookmark itself, or offset indices?
+                          // Because "🔖 " is added, the indices from 'start' are shifted by 2 chars.
+                          // This is complex. 
+                          // Let's strip "🔖 " for calculation?
+                          cleanLine = strings.TrimPrefix(cleanLine, "🔖 ")
+                      }
+                      
                       runes := []rune(cleanLine)
                       
                       startCol := 0
@@ -630,21 +701,70 @@ func (m Model) View() string {
                           pre := string(runes[:startCol])
                           sel := selectedStyle.Render(string(runes[startCol:endCol]))
                           post := string(runes[endCol:])
+                          
+                          // Re-assemble
                           line = pre + sel + post
+                          // Re-add bookmark prefix if we stripped it logic-wise, 
+                          // BUT we added it to 'line' variable before.
+                          // Actually, 'line' currently has ANSI codes.
+                          // Selection applies to stripped version.
+                          // It's safer to Apply Selection FIRST, then Highlighting/Bookmark.
+                          
+                          // Let's re-order:
+                          // 1. Highlight
+                          // 2. Add Bookmark Prefix
+                          // 3. Wrap
+                          // WAIT. Selection uses geometric X. If we add prefix, X shifts visually on screen.
+                          // But logic X is based on content.
+                          // So prefix should NOT affect logical X.
+                          
+                          // Correct Order:
+                          // 1. Highlight Line.
+                          // 2. Apply Selection (modify content).
+                          // 3. Prepend Bookmark (visual only).
+                          // 4. Wrap.
                       }
                   }
              }
-
-             // 2. Wrap the fully styled string
-             // Note: using m.screenWidth - constant for margin/padding if any.
-             // Viewport width is usually correct for inner content if set right.
-             // We use m.screenWidth as a fallback or m.viewport.Width if checking raw terminal size. 
-             // But m.viewport.Width is 20000. So we must use m.screenWidth!
+             
+             // Re-do logic properly:
+             line = visibleLines[i] // reset
+             line = highlightLine(line)
+             
+             // Selection
+             if m.selectionStart != nil && m.selectionEnd != nil {
+                 // ... selection application on 'line' ...
+                 start, end := *m.selectionStart, *m.selectionEnd
+                 if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+                     start, end = end, start
+                 }
+                 if realLineIndex >= start.Y && realLineIndex <= end.Y {
+                      clean := stripAnsi(line)
+                      runes := []rune(clean)
+                      startCol := 0
+                      if realLineIndex == start.Y { startCol = start.X }
+                      endCol := len(runes)
+                      if realLineIndex == end.Y { endCol = end.X + 1 }
+                      if startCol < 0 { startCol = 0 }
+                      if startCol > len(runes) { startCol = len(runes) }
+                      if endCol < 0 { endCol = 0 }
+                      if endCol > len(runes) { endCol = len(runes) }
+                      
+                      if startCol < endCol {
+                           pre := string(runes[:startCol])
+                           sel := selectedStyle.Render(string(runes[startCol:endCol]))
+                           post := string(runes[endCol:])
+                           line = pre + sel + post
+                      }
+                 }
+             }
+             
+             if isBookmarked {
+                 line = "🔖 " + line
+             }
              
              width := m.screenWidth
-             if width <= 0 { width = 80 } // safety
-             
-             // lipgloss's Style.Width() with Render() handles wrapping and ANSI codes.
+             if width <= 0 { width = 80 }
              wrapped := lipgloss.NewStyle().Width(width).Render(line)
              renderedLines = append(renderedLines, wrapped)
 
@@ -676,7 +796,7 @@ func (m Model) View() string {
                          // Check intersection
                          if realLineIndex >= start.Y && realLineIndex <= end.Y {
                              
-                             // Adjust X to visual
+                              // Adjust X to visual
                               visStart := 0
                               if realLineIndex == start.Y {
                                   visStart = start.X - m.xOffset
@@ -693,7 +813,7 @@ func (m Model) View() string {
                               if visEnd > len([]rune(visiblePart)) { visEnd = len([]rune(visiblePart)) }
                               
                               if visStart < visEnd {
-                                  vpRunes := []rune(stripAnsi(line)) // Remove syntax colors to apply selection cleanly
+                                  vpRunes := []rune(stripAnsi(line)) 
                                   pre := string(vpRunes[:visStart])
                                   sel := selectedStyle.Render(string(vpRunes[visStart:visEnd]))
                                   post := string(vpRunes[visEnd:])
@@ -701,6 +821,14 @@ func (m Model) View() string {
                               }
                          }
                      }
+                     
+                     // 3. Apply Bookmark (Visual Only, after highlighting/selection)
+                     if isBookmarked {
+                         line = "🔖 " + line
+                     } else {
+                         line = "   " + line // Maintain alignment
+                     }
+                     
                 } else {
                      line = "" // Scrolled past end
                 }
