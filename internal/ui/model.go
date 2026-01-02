@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/atotto/clipboard"
+    "github.com/fsnotify/fsnotify"
+    "os"
 )
 
 var (
@@ -89,6 +91,11 @@ type Model struct {
 	// Date Filters
 	startDate *time.Time
 	endDate   *time.Time
+
+    // Live Tailing
+    following bool
+    fileSize  int64
+    watcher   *fsnotify.Watcher
 }
 
 func InitialModel(filename, content string) Model {
@@ -98,7 +105,20 @@ func InitialModel(filename, content string) Model {
 	ti.Width = 20
 
 	// Highlighting will be applied lazily in View()
-    // highlighted := highlightLog(content)
+	// highlighted := highlightLog(content)
+
+    // Get initial file size for watcher
+    var fileSize int64
+    f, err := os.Stat(filename)
+    if err == nil {
+        fileSize = f.Size()
+    }
+    
+    // Initialize Watcher
+    watcher, _ := fsnotify.NewWatcher()
+    if watcher != nil {
+        watcher.Add(filename)
+    }
 
 	return Model{
 		filename:        filename,
@@ -120,12 +140,20 @@ func InitialModel(filename, content string) Model {
         xOffset:         0,
         screenWidth:     0,
         wrap:            false,
+        following:       false, // Start with follow mode off by default? Or detection?
+        fileSize:        fileSize,
+        watcher:         watcher,
 	}
 }
 
 
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+    // Start Input Blink AND File Watcher
+    cmds := []tea.Cmd{textinput.Blink}
+    if m.watcher != nil {
+        cmds = append(cmds, WaitForFileChange(m.watcher, m.filename, m.fileSize))
+    }
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -133,6 +161,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd  tea.Cmd
 		cmds []tea.Cmd
 	)
+    
+    // Handle File Changes
+    if msg, ok := msg.(FileChangeMsg); ok {
+        if msg.Error != nil {
+            // Handle error?
+        } else if msg.NewContent != "" {
+            // Append new content
+            m.originalContent += msg.NewContent
+            // Re-apply filters to update m.content
+            // Note: This might be expensive for huge files. 
+            // Optimization: append to m.content if no filters active?
+            m.applyFilters()
+            
+            m.fileSize = msg.NewOffset
+            
+            // Auto-scroll if following
+            if m.following {
+                m.viewport.GotoBottom()
+            }
+        }
+        // Continue watching
+        if m.watcher != nil {
+             cmds = append(cmds, WaitForFileChange(m.watcher, m.filename, m.fileSize))
+        }
+    }
 
 	// Handle resize independently
 	// Handle resize independently
@@ -352,6 +405,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         // Toggle Word Wrap
         case "w":
             m.wrap = !m.wrap
+            
+        // Toggle Follow Mode
+        case "f":
+            m.following = !m.following
+            if m.following {
+                m.viewport.GotoBottom()
+            }
 		}
 
 	}
@@ -685,6 +745,10 @@ func (m Model) footerView() string {
 	if m.endDate != nil {
 		status += fmt.Sprintf(" [End:%s]", m.endDate.Format("01-02 15:04"))
 	}
+    
+    if m.following {
+        status += infoStyle.Render(" [FOLLOWING]")
+    }
 	
 	info := infoStyle.Render(status)
 	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(info)))
