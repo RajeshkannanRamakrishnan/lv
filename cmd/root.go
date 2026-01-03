@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
+	"bufio"
 	"os"
 
 	"github.com/rajeshkannanramakrishnan/lv/internal/ui"
@@ -17,27 +17,40 @@ var rootCmd = &cobra.Command{
 	Long:  `A fast and interactive Log Viewer built with Bubbletea.`,
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		var content string
+		var lines []string
 
 		if len(args) > 0 {
 			// Read from file
-			b, err := ioutil.ReadFile(args[0])
+			f, err := os.Open(args[0])
 			if err != nil {
+				fmt.Printf("Error opening file: %v\n", err)
+				os.Exit(1)
+			}
+			defer f.Close()
+
+			scanner := bufio.NewScanner(f)
+			// Increase buffer size for long lines if needed, but default is usually ok for logs
+            // scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) 
+			for scanner.Scan() {
+				lines = append(lines, scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
 				fmt.Printf("Error reading file: %v\n", err)
 				os.Exit(1)
 			}
-			content = string(b)
 		} else {
 			// Check if stdin has data
 			stat, _ := os.Stdin.Stat()
 			if (stat.Mode() & os.ModeCharDevice) == 0 {
-				b, err := ioutil.ReadAll(os.Stdin)
-				if err != nil {
+				scanner := bufio.NewScanner(os.Stdin)
+				for scanner.Scan() {
+					lines = append(lines, scanner.Text())
+				}
+				if err := scanner.Err(); err != nil {
 					fmt.Printf("Error reading stdin: %v\n", err)
 					os.Exit(1)
 				}
-				content = string(b)
-				args = append(args, "Stdin") // Hack to reuse filename var if needed or just pass string
+				args = append(args, "Stdin") 
 			} else {
 				// No file and no stdin
 				cmd.Help()
@@ -50,7 +63,7 @@ var rootCmd = &cobra.Command{
             filename = args[0]
         }
 
-		p := tea.NewProgram(ui.InitialModel(filename, content), tea.WithAltScreen(), tea.WithMouseCellMotion())
+		p := tea.NewProgram(ui.InitialModel(filename, lines), tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			fmt.Printf("Error running program: %v\n", err)
 			os.Exit(1)

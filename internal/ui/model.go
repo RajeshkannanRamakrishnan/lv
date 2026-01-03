@@ -63,8 +63,9 @@ const (
 type Model struct {
 	viewport        viewport.Model
 	textInput       textinput.Model
-	originalContent string
-	content         string
+	originalLines   []string // Changed from string to []string
+	content         string   // Joined string for viewport (still needed for viewport compatibility)
+
 	filename        string
     xOffset         int
     screenWidth     int
@@ -111,7 +112,7 @@ type Model struct {
     bookmarks map[int]struct{}
 }
 
-func InitialModel(filename, content string) Model {
+func InitialModel(filename string, lines []string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Filter logs..."
 	ti.CharLimit = 156
@@ -127,17 +128,19 @@ func InitialModel(filename, content string) Model {
         fileSize = f.Size()
     }
     
-    // Initialize Watcher
-    watcher, _ := fsnotify.NewWatcher()
-    if watcher != nil {
-        watcher.Add(filename)
-    }
+	// Initialize Watcher
+	watcher, _ := fsnotify.NewWatcher()
+	if watcher != nil {
+		watcher.Add(filename)
+	}
+
+    // Initial content for viewport
+    content := strings.Join(lines, "\n")
 
 	return Model{
 		filename:        filename,
-		rawContent:      content,
-		originalContent: content, // No longer highlighted initially
-		content:         content, // No longer highlighted initially
+		originalLines:   lines,
+		content:         content,
 		headerHeight:    3,
 		footerHeight:    3,
 		textInput:       ti,
@@ -182,13 +185,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     if msg, ok := msg.(FileChangeMsg); ok {
         if msg.Error != nil {
             // Handle error?
-        } else if msg.NewContent != "" {
-            // Append new content
-            m.originalContent += msg.NewContent
-            // Re-apply filters to update m.content
-            // Note: This might be expensive for huge files. 
-            // Optimization: append to m.content if no filters active?
-            m.applyFilters()
+		} else if msg.NewContent != "" {
+			// Append new content
+            newLines := strings.Split(msg.NewContent, "\n")
+            // Handle edge case where last line was incomplete? 
+            // For simplicity, just append. Ideally we handle partial lines.
+            
+			m.originalLines = append(m.originalLines, newLines...)
+			// Re-apply filters to update m.content
+			m.applyFilters()
             
             m.fileSize = msg.NewOffset
             
@@ -577,7 +582,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyFilters() {
 	var filtered []string
-	lines := strings.Split(m.originalContent, "\n")
+    // Directly iterate over originalLines
+	lines := m.originalLines
 
 	// Pre-compile regex if in regex mode
 	var regex *regexp.Regexp
