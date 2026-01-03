@@ -57,6 +57,7 @@ const (
 	ModeFilter
 	ModeSetStartDate
 	ModeSetEndDate
+    ModeJumpTime
 )
 
 type Model struct {
@@ -273,12 +274,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.inputMode == ModeSetEndDate {
 					if val == "" {
 						m.endDate = nil
-					} else {
 						t, err := parseDate(val)
 						if err == nil {
 							m.endDate = &t
 						}
 					}
+                } else if m.inputMode == ModeJumpTime {
+                    // Jump to Time Logic
+                    if val != "" {
+                        target, err := parseDate(val)
+                        // Heuristic: If parsing fails or assumes year 0, try combining with first log line date
+                        if err != nil || target.Year() == 0 {
+                             // Try to interpret as HH:MM or HH:MM:SS relative to first log line
+                             // Get base date
+                             if len(m.content) > 0 {
+                                 // Simple: split first line
+                                 firstLine := strings.SplitN(m.content, "\n", 2)[0]
+                                 if base, ok := extractDate(firstLine); ok {
+                                     // Try to parse val as HH:MM:SS
+                                     // We can use a custom parser or try strict formats
+                                     // Simple approach: Replace timestamp in base with val?
+                                     // Or parse val as time.Time (0000-01-01 HH:MM partial) and join.
+                                     
+                                     // Let's rely on time.Parse for just time formats
+                                     timeFormats := []string{"15:04", "15:04:05", "3:04PM"}
+                                     var timeComponent time.Time
+                                     parsedTime := false
+                                     for _, tf := range timeFormats {
+                                         if tc, err := time.Parse(tf, val); err == nil {
+                                             timeComponent = tc
+                                             parsedTime = true
+                                             break
+                                         }
+                                     }
+                                     
+                                     if parsedTime {
+                                         // Combine base YYYY-MM-DD with timeComponent HH:MM:SS
+                                         year, month, day := base.Date()
+                                         hour, min, sec := timeComponent.Clock()
+                                         target = time.Date(year, month, day, hour, min, sec, 0, base.Location())
+                                         err = nil // Success
+                                     }
+                                 }
+                             }
+                        }
+                        
+                        if err == nil {
+                            // Search for first line >= target
+                            lines := strings.Split(m.content, "\n")
+                            for i, line := range lines {
+                                if t, ok := extractDate(line); ok {
+                                    if !t.Before(target) {
+                                        m.viewport.YOffset = i
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
 				}
 
 				m.inputMode = ModeNormal
@@ -446,6 +499,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 m.timelineViewport.Width = m.screenWidth
                 m.timelineViewport.Height = m.viewport.Height // Overlay same size
             }
+        
+        // Time Travel
+        case "J":
+            m.inputMode = ModeJumpTime
+            m.textInput.Placeholder = "14:30 or YYYY-MM-DD..."
+            m.textInput.SetValue("")
+            m.textInput.Focus()
+            return m, textinput.Blink
         
         // Bookmarks
         case "m":
@@ -1030,6 +1091,8 @@ func (m Model) footerView() string {
 			prefix = "[Start]: "
 		case ModeSetEndDate:
 			prefix = "[End]: "
+        case ModeJumpTime:
+            prefix = "[Jump To]: "
 		}
 		return prefix + m.textInput.View()
 	}
