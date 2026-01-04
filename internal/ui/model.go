@@ -42,6 +42,9 @@ var (
 
 	// Selection Style
 	selectedStyle = lipgloss.NewStyle().Background(lipgloss.Color("#555555")).Foreground(lipgloss.Color("#ffffff"))
+
+	// Match Style (Search Matches)
+	matchStyle = lipgloss.NewStyle().Background(lipgloss.Color("#FFFF00")).Foreground(lipgloss.Color("#000000"))
 )
 
 type Point struct {
@@ -724,6 +727,8 @@ func (m Model) View() string {
         // 2. Wrap vs Horizontal Scroll
         if m.wrap {
              // WRAP MODE
+			 // 0. Highlight Matches (Priority)
+			 line = highlightMatches(line, m.filterText, m.regexMode)
              line = highlightLine(line)
              if isBookmarked {
                  line = "🔖 " + line
@@ -851,6 +856,7 @@ func (m Model) View() string {
                      visiblePart := string(rawRunes[m.xOffset : end])
 
                      // Highlight visible part
+					 visiblePart = highlightMatches(visiblePart, m.filterText, m.regexMode)
                      line = highlightLine(visiblePart)
 
                      // 2. Selection Highlighting (Lazy)
@@ -1026,6 +1032,30 @@ func highlightLine(line string) string {
         return strings.Replace(line, "DEBUG", debugStyle.Render("DEBUG"), 1)
     }
     return line
+}
+
+func highlightMatches(line, pattern string, isRegex bool) string {
+	if pattern == "" {
+		return line
+	}
+
+	var re *regexp.Regexp
+	var err error
+
+	if isRegex {
+		re, err = regexp.Compile(pattern)
+	} else {
+		// Case insensitive literal match
+		re, err = regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
+	}
+
+	if err != nil {
+		return line // Return regex errors as is (or handle better?)
+	}
+
+	return re.ReplaceAllStringFunc(line, func(match string) string {
+		return matchStyle.Render(match)
+	})
 }
 
 
