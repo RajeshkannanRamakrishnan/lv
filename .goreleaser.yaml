@@ -1,0 +1,40 @@
+version: 2
+
+project_name: lv
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    binary: lv
+    ldflags:
+      - -s -w
+
+archives:
+  - format: tar.gz
+    # this name template makes the archive name compatible with the standard
+    # conventions used in the release page
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # use this for the binary name inside the archive
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
