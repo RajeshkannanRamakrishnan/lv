@@ -32,3 +32,4 @@ go.work.sum
 # .vscode/
 lv
 test.log
+.DS_Store
