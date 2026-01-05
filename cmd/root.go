@@ -28,27 +28,51 @@ var rootCmd = &cobra.Command{
 			}
 			defer f.Close()
 
-			scanner := bufio.NewScanner(f)
-			// Increase buffer size for long lines if needed, but default is usually ok for logs
-            // scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) 
-			for scanner.Scan() {
-				lines = append(lines, scanner.Text())
-			}
-			if err := scanner.Err(); err != nil {
-				fmt.Printf("Error reading file: %v\n", err)
-				os.Exit(1)
+			reader := bufio.NewReader(f)
+			for {
+				line, err := reader.ReadString('\n')
+				if len(line) > 0 {
+					// Trim newline manually as ReadString includes it, unlike Scanner.Text()
+					if line[len(line)-1] == '\n' {
+						line = line[:len(line)-1]
+						if len(line) > 0 && line[len(line)-1] == '\r' {
+							line = line[:len(line)-1]
+						}
+					}
+					lines = append(lines, line)
+				}
+				if err != nil {
+					if err.Error() != "EOF" {
+						fmt.Printf("Error reading file: %v\n", err)
+						os.Exit(1)
+					}
+					break
+				}
 			}
 		} else {
 			// Check if stdin has data
 			stat, _ := os.Stdin.Stat()
 			if (stat.Mode() & os.ModeCharDevice) == 0 {
-				scanner := bufio.NewScanner(os.Stdin)
-				for scanner.Scan() {
-					lines = append(lines, scanner.Text())
-				}
-				if err := scanner.Err(); err != nil {
-					fmt.Printf("Error reading stdin: %v\n", err)
-					os.Exit(1)
+				reader := bufio.NewReader(os.Stdin)
+				for {
+					line, err := reader.ReadString('\n')
+					if len(line) > 0 {
+                        // Trim newline
+						if line[len(line)-1] == '\n' {
+							line = line[:len(line)-1]
+							if len(line) > 0 && line[len(line)-1] == '\r' {
+								line = line[:len(line)-1]
+							}
+						}
+						lines = append(lines, line)
+					}
+					if err != nil {
+						if err.Error() != "EOF" {
+							fmt.Printf("Error reading stdin: %v\n", err)
+							os.Exit(1)
+						}
+						break
+					}
 				}
 				args = append(args, "Stdin") 
 			} else {
