@@ -66,13 +66,12 @@ const (
 type Model struct {
 	viewport        viewport.Model
 	textInput       textinput.Model
-	originalLines   []string // Changed from string to []string
-	content         string   // Joined string for viewport (still needed for viewport compatibility)
+	originalLines   []string
 
 	filename        string
-    xOffset         int
-    screenWidth     int
-    wrap            bool
+	xOffset         int
+	screenWidth     int
+	wrap            bool
 	ready           bool
 	headerHeight    int
 	footerHeight    int
@@ -99,20 +98,25 @@ type Model struct {
 	startDate *time.Time
 	endDate   *time.Time
 
-    // Live Tailing
-    following bool
-    fileSize  int64
-    watcher   *fsnotify.Watcher
+	// Virtualization
+	filteredLines   []string // Replaces content/originalLines for display (this is the SOURCE of truth for viewport)
+	yOffset         int
+	viewportHeight  int
+	
+	// Live Tailing
+	following bool
+	fileSize  int64
+	watcher   *fsnotify.Watcher
 
-    // Folding
-    foldStackTraces bool
+	// Folding
+	foldStackTraces bool
 
-    // Timeline
-    showTimeline     bool
-    timelineViewport viewport.Model
+	// Timeline
+	showTimeline     bool
+	timelineViewport viewport.Model
 
-    // Bookmarks
-    bookmarks map[int]struct{}
+	// Bookmarks
+	bookmarks map[int]struct{}
 }
 
 func InitialModel(filename string, lines []string) Model {
@@ -137,13 +141,12 @@ func InitialModel(filename string, lines []string) Model {
 		watcher.Add(filename)
 	}
 
-    // Initial content for viewport
-    content := strings.Join(lines, "\n")
+
 
 	return Model{
 		filename:        filename,
 		originalLines:   lines,
-		content:         content,
+		filteredLines:   lines, // Initially all lines
 		headerHeight:    3,
 		footerHeight:    3,
 		textInput:       ti,
@@ -156,15 +159,16 @@ func InitialModel(filename string, lines []string) Model {
 
 		selectionStart:  nil,
 		selectionEnd:    nil,
-        xOffset:         0,
-        screenWidth:     0,
-        wrap:            false,
-        following:       false, // Start with follow mode off by default? Or detection?
-        fileSize:        fileSize,
-        watcher:         watcher,
-        foldStackTraces: false,
-        showTimeline:    false,
-        bookmarks:       make(map[int]struct{}),
+		xOffset:         0,
+		yOffset:         0,
+		screenWidth:     0,
+		wrap:            false,
+		following:       false, 
+		fileSize:        fileSize,
+		watcher:         watcher,
+		foldStackTraces: false,
+		showTimeline:    false,
+		bookmarks:       make(map[int]struct{}),
 	}
 }
 
@@ -224,7 +228,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             m.viewport.Width = 20000 // Virtual width to avoid clipping
             // Only set content AFTER setting width to avoid initial wrapping? 
             // Actually New() sets width. We overwrite it.
-			m.viewport.SetContent(m.content)
+			m.viewport.SetContent("") // Virtualized: View() handles content
 			m.ready = true
 		} else {
 			m.viewport.Width = 20000 // Keep it wide
@@ -239,7 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
 		if msg.Y >= m.headerHeight && msg.Y < m.viewport.Height+m.headerHeight {
-			lineIndex := msg.Y - m.headerHeight + m.viewport.YOffset
+			lineIndex := msg.Y - m.headerHeight + m.yOffset
 			
 			// Adjust for gutter offset in No-Wrap mode (default view)
 			// We add 3 spaces of padding in View() for no-wrap mode: line = "   " + line
@@ -254,7 +258,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 logicalX = 0
             }
 
-			totalLines := strings.Count(m.content, "\n") + 1
+			totalLines := len(m.filteredLines)
 			if lineIndex >= 0 && lineIndex < totalLines {
 				if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 					m.selecting = true
@@ -308,9 +312,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                         if err != nil || target.Year() == 0 {
                              // Try to interpret as HH:MM or HH:MM:SS relative to first log line
                              // Get base date
-                             if len(m.content) > 0 {
+                             if len(m.filteredLines) > 0 {
                                  // Simple: split first line
-                                 firstLine := strings.SplitN(m.content, "\n", 2)[0]
+                                 firstLine := m.filteredLines[0]
                                  if base, ok := extractDate(firstLine); ok {
                                      // Try to parse val as HH:MM:SS
                                      // We can use a custom parser or try strict formats
@@ -342,7 +346,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                         
                         if err == nil {
                             // Search for first line >= target
-                            lines := strings.Split(m.content, "\n")
+                            lines := m.filteredLines
                             for i, line := range lines {
                                 if t, ok := extractDate(line); ok {
                                     if !t.Before(target) {
@@ -385,7 +389,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					start, end = end, start
 				}
 
-				lines := strings.Split(m.content, "\n")
+				lines := m.filteredLines
 				var selectedLines []string
 
 				for i := start.Y; i <= end.Y && i < len(lines); i++ {
@@ -584,6 +588,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	}
 
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+        // Virtualized Scrolling
+        case "up", "k":
+            m.yOffset--
+        case "down", "j":
+            m.yOffset++
+        case "pgup", "ctrl+b":
+            m.yOffset -= m.viewport.Height
+        case "pgdown", "ctrl+f", "space":
+            m.yOffset += m.viewport.Height
+        case "home", "g":
+            m.yOffset = 0
+        case "end", "G":
+            m.yOffset = len(m.filteredLines) - m.viewport.Height
+        }
+    case tea.MouseMsg:
+        switch msg.Type {
+        case tea.MouseWheelUp:
+            m.yOffset--
+        case tea.MouseWheelDown:
+            m.yOffset++
+        }
+    }
+    
+    // Clamp yOffset
+    if m.yOffset < 0 {
+        m.yOffset = 0
+    }
+    maxOffset := len(m.filteredLines) - m.viewport.Height
+    if maxOffset < 0 {
+        maxOffset = 0
+    }
+    if m.yOffset > maxOffset {
+        m.yOffset = maxOffset
+    }
+    
+    // Disable follow mode if user scrolls up manually
+    // (Simple heuristic: if not at bottom)
+    if m.yOffset < maxOffset {
+        m.following = false
+    }
+
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
     
@@ -637,13 +685,6 @@ func (m *Model) applyFilters() {
 					continue
 				}
 			}
-			// If no date found in line, do we keep or drop?
-			// Usually keep if we are not strict, or drop if we are strict.
-			// Let's default to DROP if we have active date filters and can't find a date?
-			// Or KEEP to be safe?
-			// Let's KEEP lines without dates (like stack traces) usually attached to previous lines.
-			// But since we are processing line-by-line, we don't know context.
-			// Simple approach: if date found, filter. If not found, INCLUDE (assume it's part of context).
 		}
 
 		// 3. Text/Regex Filtering
@@ -698,9 +739,9 @@ func (m *Model) applyFilters() {
             }
         }
         flushTrace()
-        m.content = strings.Join(folded, "\n")
+        m.filteredLines = folded
     } else {
-        m.content = strings.Join(filtered, "\n")
+        m.filteredLines = filtered
     }
 
     // Clear selection on filter change
@@ -709,8 +750,9 @@ func (m *Model) applyFilters() {
     // Clear bookmarks on filter change? indices are invalid.
     m.bookmarks = make(map[int]struct{}) 
     
-	m.viewport.SetContent(m.content)
-	m.viewport.YOffset = 0
+    // Virtualization reset
+	m.yOffset = 0
+    m.viewport.SetContent("") // Clear viewport content to force refresh? Actually View() constructs it.
 }
 
 func (m Model) View() string {
@@ -718,25 +760,30 @@ func (m Model) View() string {
 		return "\n  Initializing..."
 	}
     
-    // Lazy Rendering Logic
-    // 1. Get visible raw text from viewport
-    visibleText := m.viewport.View()
-    visibleLines := strings.Split(visibleText, "\n")
+    // Virtualization:
+    // 1. Determine visible slice from m.filteredLines based on m.yOffset
+    start := m.yOffset
+    end := start + m.viewport.Height
+    if start >= len(m.filteredLines) {
+        start = len(m.filteredLines)
+    }
+    if end > len(m.filteredLines) {
+        end = len(m.filteredLines)
+    }
     
-    // 2. Iterate and apply highlighting/selection
+    visibleLines := m.filteredLines[start:end]
+    
+    // 2. Iterate and apply highlighting/selection to only these lines
     var renderedLines []string
     for i, line := range visibleLines {
-        // Calculate real line index in the full content
-        realLineIndex := m.viewport.YOffset + i
+        // Calculate real line index
+        realLineIndex := start + i
         
         isBookmarked := false
         if _, ok := m.bookmarks[realLineIndex]; ok {
             isBookmarked = true
         }
-        
-        // 1. Syntax Highlighting (Lazy) is done per visible part usually,
-        // but for wrap we do it on full line first.
-        
+
         // 2. Wrap vs Horizontal Scroll
         if m.wrap {
              // WRAP MODE
@@ -747,34 +794,25 @@ func (m Model) View() string {
                  line = "🔖 " + line
              }
              
-             // 1. Apply Selection to full line if applicable
+             // 1. Apply Selection
              if m.selectionStart != nil && m.selectionEnd != nil {
-                 start, end := *m.selectionStart, *m.selectionEnd
-                 if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
-                     start, end = end, start
+                 startSel, endSel := *m.selectionStart, *m.selectionEnd
+                 if startSel.Y > endSel.Y || (startSel.Y == endSel.Y && startSel.X > endSel.X) {
+                     startSel, endSel = endSel, startSel
                  }
-                  if realLineIndex >= start.Y && realLineIndex <= end.Y {
+                  if realLineIndex >= startSel.Y && realLineIndex <= endSel.Y {
                       cleanLine := stripAnsi(line)
-                      if isBookmarked {
-                          // Selection logic needs to account for added prefix?
-                          // Visual selection usually on content.
-                          // Simplest: Don't highlight the bookmark itself, or offset indices?
-                          // Because "🔖 " is added, the indices from 'start' are shifted by 2 chars.
-                          // This is complex. 
-                          // Let's strip "🔖 " for calculation?
-                          cleanLine = strings.TrimPrefix(cleanLine, "🔖 ")
-                      }
                       
                       runes := []rune(cleanLine)
                       
                       startCol := 0
-                      if realLineIndex == start.Y {
-                          startCol = start.X
+                      if realLineIndex == startSel.Y {
+                          startCol = startSel.X
                       }
                       
                       endCol := len(runes)
-                      if realLineIndex == end.Y {
-                          endCol = end.X + 1
+                      if realLineIndex == endSel.Y {
+                          endCol = endSel.X + 1
                       }
                       
                       if startCol < 0 { startCol = 0 }
@@ -786,67 +824,12 @@ func (m Model) View() string {
                           pre := string(runes[:startCol])
                           sel := selectedStyle.Render(string(runes[startCol:endCol]))
                           post := string(runes[endCol:])
-                          
-                          // Re-assemble
                           line = pre + sel + post
-                          // Re-add bookmark prefix if we stripped it logic-wise, 
-                          // BUT we added it to 'line' variable before.
-                          // Actually, 'line' currently has ANSI codes.
-                          // Selection applies to stripped version.
-                          // It's safer to Apply Selection FIRST, then Highlighting/Bookmark.
-                          
-                          // Let's re-order:
-                          // 1. Highlight
-                          // 2. Add Bookmark Prefix
-                          // 3. Wrap
-                          // WAIT. Selection uses geometric X. If we add prefix, X shifts visually on screen.
-                          // But logic X is based on content.
-                          // So prefix should NOT affect logical X.
-                          
-                          // Correct Order:
-                          // 1. Highlight Line.
-                          // 2. Apply Selection (modify content).
-                          // 3. Prepend Bookmark (visual only).
-                          // 4. Wrap.
                       }
                   }
              }
              
-             // Re-do logic properly:
-             line = visibleLines[i] // reset
-             line = highlightLine(line)
-             
-             // Selection
-             if m.selectionStart != nil && m.selectionEnd != nil {
-                 // ... selection application on 'line' ...
-                 start, end := *m.selectionStart, *m.selectionEnd
-                 if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
-                     start, end = end, start
-                 }
-                 if realLineIndex >= start.Y && realLineIndex <= end.Y {
-                      clean := stripAnsi(line)
-                      runes := []rune(clean)
-                      startCol := 0
-                      if realLineIndex == start.Y { startCol = start.X }
-                      endCol := len(runes)
-                      if realLineIndex == end.Y { endCol = end.X + 1 }
-                      if startCol < 0 { startCol = 0 }
-                      if startCol > len(runes) { startCol = len(runes) }
-                      if endCol < 0 { endCol = 0 }
-                      if endCol > len(runes) { endCol = len(runes) }
-                      
-                      if startCol < endCol {
-                           pre := string(runes[:startCol])
-                           sel := selectedStyle.Render(string(runes[startCol:endCol]))
-                           post := string(runes[endCol:])
-                           line = pre + sel + post
-                      }
-                 }
-             }
-             
-             if isBookmarked {
-                 line = "🔖 " + line
-             }
+
              
              width := m.screenWidth
              if width <= 0 { width = 80 }
@@ -924,10 +907,15 @@ func (m Model) View() string {
 
     }
     
-// Join rendered lines
+	// Join rendered lines
     finalContent := strings.Join(renderedLines, "\n")
     
-    currentView := finalContent
+    // IMPORTANT: Feed the rendered (and potentially wrapped) content to the viewport
+    // This handling clipping (ensure we don't exceed height) and padding if strictly needed.
+    m.viewport.SetContent(finalContent)
+    m.viewport.YOffset = 0
+    
+    currentView := m.viewport.View()
     if m.showTimeline {
         currentView = m.timelineViewport.View()
     }
@@ -938,7 +926,7 @@ func (m Model) View() string {
 func (m *Model) generateTimeline() {
     // 1. Extract timestamps
     var timestamps []time.Time
-    lines := strings.Split(m.content, "\n")
+    lines := m.filteredLines
     for _, line := range lines {
         if t, ok := extractDate(line); ok {
             timestamps = append(timestamps, t)
@@ -1147,7 +1135,15 @@ func (m Model) footerView() string {
 	}
 	
 	// Show active date filters in footer if present
-	status := fmt.Sprintf("%3.f%%", m.viewport.ScrollPercent()*100)
+    // Calculate scroll percent manually
+    var percent float64
+    if len(m.filteredLines) > 0 {
+        percent = float64(m.yOffset) / float64(len(m.filteredLines)-m.viewport.Height)
+        if percent < 0 { percent = 0 }
+        if percent > 1 { percent = 1 }
+    }
+	status := fmt.Sprintf("%3.f%%", percent*100)
+    
 	if m.startDate != nil {
 		status += fmt.Sprintf(" [Start:%s]", m.startDate.Format("01-02 15:04"))
 	}
