@@ -240,7 +240,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Y >= m.headerHeight && msg.Y < m.viewport.Height+m.headerHeight {
 			lineIndex := msg.Y - m.headerHeight + m.viewport.YOffset
-            logicalX := msg.X + m.xOffset
+			
+			// Adjust for gutter offset in No-Wrap mode (default view)
+			// We add 3 spaces of padding in View() for no-wrap mode: line = "   " + line
+			// So we need to subtract 3 from visual X to get logical X.
+			gutterOffset := 0
+			if !m.wrap {
+				gutterOffset = 3
+			}
+			
+            logicalX := msg.X + m.xOffset - gutterOffset
+            if logicalX < 0 {
+                logicalX = 0
+            }
+
 			totalLines := strings.Count(m.content, "\n") + 1
 			if lineIndex >= 0 && lineIndex < totalLines {
 				if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
