@@ -117,6 +117,9 @@ type Model struct {
 
 	// Bookmarks
 	bookmarks map[int]struct{}
+
+	// Help
+	showHelp bool
 }
 
 func InitialModel(filename string, lines []string) Model {
@@ -169,6 +172,7 @@ func InitialModel(filename string, lines []string) Model {
 		foldStackTraces: false,
 		showTimeline:    false,
 		bookmarks:       make(map[int]struct{}),
+		showHelp:        false,
 	}
 }
 
@@ -378,7 +382,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+        if m.showHelp {
+            if msg.String() == "esc" || msg.String() == "?" || msg.String() == "q" {
+                m.showHelp = false
+            }
+            return m, nil
+        }
+
 		switch msg.String() {
+        case "?":
+            m.showHelp = !m.showHelp
+            return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "y":
@@ -759,6 +773,19 @@ func (m Model) View() string {
 	if !m.ready {
 		return "\n  Initializing..."
 	}
+
+    if m.showHelp {
+        // Calculate total height
+        height := m.viewport.Height + m.headerHeight + m.footerHeight
+        if height == 0 { height = 20 } // fallback
+        width := m.screenWidth
+        if width == 0 { width = 80 }
+
+        return lipgloss.Place(width, height, 
+            lipgloss.Center, lipgloss.Center, 
+            m.helpView(),
+        )
+    }
     
     // Virtualization:
     // 1. Determine visible slice from m.filteredLines based on m.yOffset
@@ -1142,22 +1169,35 @@ func (m Model) footerView() string {
         if percent < 0 { percent = 0 }
         if percent > 1 { percent = 1 }
     }
-	status := fmt.Sprintf("%3.f%%", percent*100)
+	status := fmt.Sprintf(" %3.f%% ", percent*100)
     
+    // Line Counts
+    status += fmt.Sprintf("│ Lines: %d/%d ", len(m.filteredLines), len(m.originalLines))
+
 	if m.startDate != nil {
-		status += fmt.Sprintf(" [Start:%s]", m.startDate.Format("01-02 15:04"))
+		status += fmt.Sprintf("│ Start: %s ", m.startDate.Format("15:04"))
 	}
 	if m.endDate != nil {
-		status += fmt.Sprintf(" [End:%s]", m.endDate.Format("01-02 15:04"))
+		status += fmt.Sprintf("│ End: %s ", m.endDate.Format("15:04"))
 	}
     
     if m.following {
-        status += infoStyle.Render(" [FOLLOWING]")
+        // Blinking indicator? Or just bold color?
+        status += "│ " + infoStyle.Render("LIVE")
     }
 	
-	info := infoStyle.Render(status)
-	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(info)))
-	return lipgloss.JoinHorizontal(lipgloss.Center, line, info)
+    // Right aligned help hint
+    help := " ? Help "
+    
+    // Assemble
+    totalWidth := m.viewport.Width
+    leftSide := status
+    
+    // Spacer
+    spaceCount := max(0, totalWidth - lipgloss.Width(leftSide) - lipgloss.Width(help))
+	line := strings.Repeat("─", spaceCount)
+    
+	return lipgloss.JoinHorizontal(lipgloss.Center, leftSide, line, help)
 }
 
 func max(a, b int) int {
@@ -1165,4 +1205,39 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (m Model) helpView() string {
+	helpRequest := []struct {
+		key, desc string
+	}{
+		{"?", "Toggle Help"},
+		{"q / esc", "Quit / Close Help"},
+		{"/", "Filter Logs"},
+		{"f", "Toggle Follow"},
+		{"j / k", "Scroll Down / Up"},
+		{"g / G", "Scroll Top / Bottom"},
+        {"m", "Toggle Bookmark"},
+        {"J", "Jump to Time"},
+        {"t", "Toggle Timeline"},
+        {"r", "Reload File"},
+        {"c", "Clear Filters"},
+	}
+
+	s := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2)
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Keyboard Shortcuts"))
+	b.WriteString("\n\n")
+
+	for _, h := range helpRequest {
+		key := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Width(12).Render(h.key)
+		desc := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(h.desc)
+		b.WriteString(fmt.Sprintf("%s %s\n", key, desc))
+	}
+
+	return s.Render(b.String())
 }
