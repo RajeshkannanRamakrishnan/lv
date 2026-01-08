@@ -529,8 +529,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         case "f":
             m.following = !m.following
             if m.following {
-                m.viewport.GotoBottom()
+                m.yOffset = len(m.filteredLines) - m.viewport.Height
+                if m.yOffset < 0 { m.yOffset = 0 }
             }
+
         
         // Toggle Stack Trace Folding
         case "z":
