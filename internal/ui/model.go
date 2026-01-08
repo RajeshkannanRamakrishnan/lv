@@ -203,14 +203,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             // For simplicity, just append. Ideally we handle partial lines.
             
 			m.originalLines = append(m.originalLines, newLines...)
+
 			// Re-apply filters to update m.content
-			m.applyFilters()
+			m.applyFilters(false) // Keep current view state
             
             m.fileSize = msg.NewOffset
             
             // Auto-scroll if following
             if m.following {
-                m.viewport.GotoBottom()
+                // Virtualized goto bottom
+                m.yOffset = len(m.filteredLines) - m.viewport.Height
+                if m.yOffset < 0 { m.yOffset = 0 }
             }
         }
         // Continue watching
@@ -291,6 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				if m.inputMode == ModeFilter {
 					m.filterText = val
+					m.applyFilters(true)
 				} else if m.inputMode == ModeSetStartDate {
 					if val == "" {
 						m.startDate = nil
@@ -364,14 +368,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				m.inputMode = ModeNormal
-				m.applyFilters()
+				m.applyFilters(true)
 				m.textInput.Blur()
 				return m, nil
 			case "esc":
 				m.inputMode = ModeNormal
 				m.textInput.Blur()
 				// Re-apply filters to restore content if we were halfway typing
-				m.applyFilters()
+				m.applyFilters(true)
 				return m, nil
 			}
 		}
@@ -453,7 +457,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterText = ""
 			m.startDate = nil
 			m.endDate = nil
-			m.applyFilters()
+			m.applyFilters(true)
 
 
 		case "/":
@@ -486,19 +490,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Advanced Toggles
 		case "1":
 			m.showError = !m.showError
-			m.applyFilters()
+			m.applyFilters(true)
 		case "2":
 			m.showWarn = !m.showWarn
-			m.applyFilters()
+			m.applyFilters(true)
 		case "3":
 			m.showInfo = !m.showInfo
-			m.applyFilters()
+			m.applyFilters(true)
 		case "4":
 			m.showDebug = !m.showDebug
-			m.applyFilters()
-		case "ctrl+r":
+			m.applyFilters(true)
+		case "R":
 			m.regexMode = !m.regexMode
-			m.applyFilters() // Re-apply to update regex usage
+			m.applyFilters(true) // Re-apply to update regex usage
         
         // Horizontal Scrolling
         case "right", "l":
@@ -513,6 +517,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         case "w":
             m.wrap = !m.wrap
             
+        // Clear all filters
+        case "c":
+            m.startDate = nil
+            m.endDate = nil
+            m.filterText = ""
+            m.regexMode = false
+            m.applyFilters(true)
+
         // Toggle Follow Mode
         case "f":
             m.following = !m.following
@@ -523,7 +535,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         // Toggle Stack Trace Folding
         case "z":
             m.foldStackTraces = !m.foldStackTraces
-            m.applyFilters()
+            m.applyFilters(true)
             
         // Toggle Timeline
         case "t":
@@ -658,7 +670,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *Model) applyFilters() {
+func (m *Model) applyFilters(resetView bool) {
 	var filtered []string
     // Directly iterate over originalLines
 	lines := m.originalLines
@@ -758,15 +770,18 @@ func (m *Model) applyFilters() {
         m.filteredLines = filtered
     }
 
-    // Clear selection on filter change
-    m.selectionStart = nil
-    m.selectionEnd = nil
-    // Clear bookmarks on filter change? indices are invalid.
-    m.bookmarks = make(map[int]struct{}) 
-    
-    // Virtualization reset
-	m.yOffset = 0
-    m.viewport.SetContent("") // Clear viewport content to force refresh? Actually View() constructs it.
+    if resetView {
+        // Clear selection on filter change
+        m.selectionStart = nil
+        m.selectionEnd = nil
+        // Clear bookmarks on filter change? indices are invalid.
+        m.bookmarks = make(map[int]struct{}) 
+        
+        // Virtualization reset
+        m.yOffset = 0
+    }
+    // Always clear viewport content as View() reconstructs it
+    m.viewport.SetContent("") 
 }
 
 func (m Model) View() string {
