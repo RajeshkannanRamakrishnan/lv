@@ -1225,36 +1225,77 @@ func max(a, b int) int {
 }
 
 func (m Model) helpView() string {
-	helpRequest := []struct {
-		key, desc string
-	}{
-		{"?", "Toggle Help"},
-		{"q / esc", "Quit / Close Help"},
-		{"/", "Filter Logs"},
-		{"f", "Toggle Follow"},
-		{"j / k", "Scroll Down / Up"},
-		{"g / G", "Scroll Top / Bottom"},
-        {"m", "Toggle Bookmark"},
+    // Define helper struct for keys
+    type helpEntry struct {
+        key, desc string
+    }
+    
+    // Group keys
+    general := []helpEntry{
+        {"?", "Close Help"},
+        {"q / esc", "Quit / Close"},
+        {"ctrl+c", "Quit"},
+    }
+    
+    nav := []helpEntry{
+        {"j / k", "Scroll Down / Up"},
+        {"g / G", "Scroll Top / Bottom"},
+        {"f", "Toggle Follow"},
         {"J", "Jump to Time"},
-        {"t", "Toggle Timeline"},
-        {"r", "Reload File"},
+        {"space", "Page Down"},
+        {"b / u", "PgUp / PgDown"},
+    }
+    
+    filtering := []helpEntry{
+        {"/", "Filter Logs"},
         {"c", "Clear Filters"},
-	}
+        {"R", "Regex Toggle"},
+        {"s / e", "Set Start / End (Time)"},
+        {"1-4", "Toggle Levels (Err/Warn...)"},
+    }
+    
+    viewing := []helpEntry{
+        {"w", "Toggle Wrap"},
+        {"z", "Fold Stack Traces"},
+        {"t", "Toggle Timeline"},
+        {"m", "Toggle Bookmark"},
+        {"l / h", "Scroll Right / Left"},
+        {"r", "Reload File"},
+    }
 
-	s := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(1, 2)
+	// Styles
+    boxStyle := lipgloss.NewStyle().
+        Border(lipgloss.RoundedBorder()).
+        BorderForeground(lipgloss.Color("62")).
+        Padding(1, 2).
+        Margin(1)
+        
+    headerStyle := lipgloss.NewStyle().
+        Foreground(lipgloss.Color("240")).
+        Bold(true).
+        Underline(true).
+        MarginBottom(1)
+        
+    keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+    descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
-	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Keyboard Shortcuts"))
-	b.WriteString("\n\n")
+    // Helper to render a column
+    renderColumn := func(title string, entries []helpEntry) string {
+        s := headerStyle.Render(title) + "\n"
+        for _, e := range entries {
+            k := keyStyle.Width(10).Render(e.key)
+            d := descStyle.Render(e.desc)
+            s += fmt.Sprintf("%s %s\n", k, d)
+        }
+        return s
+    }
+    
+    // Layout
+    col1 := renderColumn("General", general) + "\n" + renderColumn("Navigation", nav)
+    col2 := renderColumn("Filtering", filtering) + "\n" + renderColumn("View & Tools", viewing)
+    
+    // Join columns with gap
+    content := lipgloss.JoinHorizontal(lipgloss.Top, col1, "    ", col2)
 
-	for _, h := range helpRequest {
-		key := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Width(12).Render(h.key)
-		desc := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(h.desc)
-		b.WriteString(fmt.Sprintf("%s %s\n", key, desc))
-	}
-
-	return s.Render(b.String())
+	return boxStyle.Render(content)
 }

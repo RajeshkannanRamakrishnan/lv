@@ -13,8 +13,24 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "lv [file]",
-	Short: "Log Viewer is a TUI for viewing log files",
-	Long:  `A fast and interactive Log Viewer built with Bubbletea.`,
+	Short: "High-performance TUI for log analysis",
+	Long: `lv is a blazing fast terminal-based log viewer designed for developers and DevOps.
+
+Key Features:
+  - Instant loading of large files (GB+) via virtualization.
+  - Interactive filtering (fuzzy & regex) and time-range drill-down.
+  - "Time Travel": Jump directly to a specific timestamp (press 'J').
+  - Stack trace folding for cleaner error analysis.
+  - Follow mode (tail -f) with auto-scroll.
+  - Mouse support for scrolling and selection.
+  - Rich keyboard shortcuts (vim-like navigation).`,
+    Example: `  # Open a local file
+  lv app.log
+
+  # Pipe logs from stdin
+  kubectl logs -f my-pod | lv
+  docker logs my-container | lv
+  cat large.log | lv`,
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		var lines []string
