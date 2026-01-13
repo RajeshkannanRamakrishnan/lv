@@ -51,7 +51,7 @@ func TestApplyFilters(t *testing.T) {
 		"2023-01-01 10:00:03 DEBUG Debug message",
 	}
 
-	m := InitialModel("test.log", lines)
+	m := InitialModel("test.log", lines, nil)
 	
 	// Test 1: No filters
 	m.applyFilters(true)
