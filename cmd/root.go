@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+    "io"
 	"bufio"
 	"os"
 
@@ -34,6 +35,7 @@ Key Features:
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		var lines []string
+        var reader io.Reader
 
 		if len(args) > 0 {
 			// Read from file
@@ -43,54 +45,29 @@ Key Features:
 				os.Exit(1)
 			}
 			defer f.Close()
-
-			reader := bufio.NewReader(f)
-			for {
-				line, err := reader.ReadString('\n')
-				if len(line) > 0 {
-					// Trim newline manually as ReadString includes it, unlike Scanner.Text()
-					if line[len(line)-1] == '\n' {
-						line = line[:len(line)-1]
-						if len(line) > 0 && line[len(line)-1] == '\r' {
-							line = line[:len(line)-1]
-						}
-					}
-					lines = append(lines, line)
-				}
-				if err != nil {
-					if err.Error() != "EOF" {
-						fmt.Printf("Error reading file: %v\n", err)
-						os.Exit(1)
-					}
-					break
-				}
+            
+            // For now, keep loading files into memory as per existing logic
+            // (user request: "shouldn't break other changes")
+            // We could stream files too, but let's be safe and keep large file loading behavior
+            // which currently uses the lines slice.
+            // Wait, root.go logic was:
+			scanner := bufio.NewScanner(f)
+            // Increase buffer for large lines
+            buf := make([]byte, 0, 64*1024)
+            scanner.Buffer(buf, 1024*1024)
+            
+			for scanner.Scan() {
+				lines = append(lines, scanner.Text())
 			}
+            if err := scanner.Err(); err != nil {
+                 fmt.Printf("Error reading file: %v\n", err)
+            }
 		} else {
 			// Check if stdin has data
 			stat, _ := os.Stdin.Stat()
 			if (stat.Mode() & os.ModeCharDevice) == 0 {
-				reader := bufio.NewReader(os.Stdin)
-				for {
-					line, err := reader.ReadString('\n')
-					if len(line) > 0 {
-                        // Trim newline
-						if line[len(line)-1] == '\n' {
-							line = line[:len(line)-1]
-							if len(line) > 0 && line[len(line)-1] == '\r' {
-								line = line[:len(line)-1]
-							}
-						}
-						lines = append(lines, line)
-					}
-					if err != nil {
-						if err.Error() != "EOF" {
-							fmt.Printf("Error reading stdin: %v\n", err)
-							os.Exit(1)
-						}
-						break
-					}
-				}
-				args = append(args, "Stdin") 
+                // Stdin is a pipe. Pass it to the model for streaming.
+				reader = os.Stdin
 			} else {
 				// No file and no stdin
 				cmd.Help()
@@ -103,7 +80,7 @@ Key Features:
             filename = args[0]
         }
 
-		p := tea.NewProgram(ui.InitialModel(filename, lines), tea.WithAltScreen(), tea.WithMouseCellMotion())
+		p := tea.NewProgram(ui.InitialModel(filename, lines, reader), tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			fmt.Printf("Error running program: %v\n", err)
 			os.Exit(1)

@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+    "io"
 	"regexp"
 	"strings"
 	"time"
@@ -120,9 +121,17 @@ type Model struct {
 
 	// Help
 	showHelp bool
+
+    // Streamer
+    streamer *Streamer
 }
 
-func InitialModel(filename string, lines []string) Model {
+func InitialModel(filename string, lines []string, reader io.Reader) Model {
+    var streamer *Streamer
+    if reader != nil {
+        streamer = NewStreamer(reader)
+    }
+
 	ti := textinput.New()
 	ti.Placeholder = "Filter logs..."
 	ti.CharLimit = 156
@@ -146,7 +155,7 @@ func InitialModel(filename string, lines []string) Model {
 
 
 
-	return Model{
+	m := Model{
 		filename:        filename,
 		originalLines:   lines,
 		filteredLines:   lines, // Initially all lines
@@ -173,7 +182,10 @@ func InitialModel(filename string, lines []string) Model {
 		showTimeline:    false,
 		bookmarks:       make(map[int]struct{}),
 		showHelp:        false,
+        streamer:        streamer,
 	}
+    m.applyFilters(true)
+    return m
 }
 
 
@@ -182,6 +194,9 @@ func (m Model) Init() tea.Cmd {
     cmds := []tea.Cmd{textinput.Blink}
     if m.watcher != nil {
         cmds = append(cmds, WaitForFileChange(m.watcher, m.filename, m.fileSize))
+    }
+    if m.streamer != nil {
+        cmds = append(cmds, WaitForStream(m.streamer))
     }
 	return tea.Batch(cmds...)
 }
@@ -219,6 +234,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         // Continue watching
         if m.watcher != nil {
              cmds = append(cmds, WaitForFileChange(m.watcher, m.filename, m.fileSize))
+        }
+    }
+    
+    // Handle Log Chunks (Streaming)
+    if msg, ok := msg.(LogChunkMsg); ok {
+        if msg.Err != nil {
+            // EOF or error?
+        } else if len(msg.Lines) > 0 {
+            m.originalLines = append(m.originalLines, msg.Lines...)
+            m.applyFilters(false) // Preserve view
+            
+            if m.following {
+                m.yOffset = len(m.filteredLines) - m.viewport.Height
+                if m.yOffset < 0 { m.yOffset = 0 }
+            }
+        }
+        // Continue stream loop
+        if m.streamer != nil {
+             cmds = append(cmds, WaitForStream(m.streamer))
         }
     }
 
