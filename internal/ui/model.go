@@ -175,7 +175,7 @@ func InitialModel(filename string, lines []string, reader io.Reader) Model {
 		yOffset:         0,
 		screenWidth:     0,
 		wrap:            false,
-		following:       false, 
+		following:       streamer != nil, // Auto-follow for streams 
 		fileSize:        fileSize,
 		watcher:         watcher,
 		foldStackTraces: false,
