@@ -499,6 +499,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputMode = ModeFilter
 			m.textInput.Placeholder = "Filter logs..."
 			m.textInput.SetValue(m.filterText)
+			m.textInput.SetCursor(len(m.filterText))
 			m.textInput.Focus()
 			return m, textinput.Blink
 		case "[":
