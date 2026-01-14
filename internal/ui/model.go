@@ -94,6 +94,7 @@ type Model struct {
 
 	// Text Filter Storage
 	filterText string
+	regex      *regexp.Regexp
 
 	// Date Filters
 	startDate *time.Time
@@ -712,13 +713,18 @@ func (m *Model) applyFilters(resetView bool) {
 	lines := m.originalLines
 
 	// Pre-compile regex if in regex mode
-	var regex *regexp.Regexp
-	var err error
-	if m.regexMode && m.filterText != "" {
-		regex, err = regexp.Compile(m.filterText)
-		if err != nil {
-			// Invalid regex
+	if m.filterText != "" {
+		var err error
+		if m.regexMode {
+			m.regex, err = regexp.Compile(m.filterText)
+		} else {
+			m.regex, err = regexp.Compile("(?i)" + regexp.QuoteMeta(m.filterText))
 		}
+		if err != nil {
+			m.regex = nil
+		}
+	} else {
+		m.regex = nil
 	}
 
 	for _, line := range lines {
@@ -751,11 +757,12 @@ func (m *Model) applyFilters(resetView bool) {
 
 		// 3. Text/Regex Filtering
 		if m.filterText != "" {
-			if m.regexMode && regex != nil {
-				if !regex.MatchString(line) {
+			if m.regexMode {
+				if m.regex != nil && !m.regex.MatchString(line) {
 					continue
 				}
-			} else if !m.regexMode {
+			} else {
+				// Case-insensitive contains (old robust behavior)
 				if !strings.Contains(strings.ToLower(line), strings.ToLower(m.filterText)) {
 					continue
 				}
@@ -852,136 +859,152 @@ func (m Model) View() string {
     visibleLines := m.filteredLines[start:end]
     
     // 2. Iterate and apply highlighting/selection to only these lines
-    var renderedLines []string
-    for i, line := range visibleLines {
-        // Calculate real line index
-        realLineIndex := start + i
-        
-        isBookmarked := false
-        if _, ok := m.bookmarks[realLineIndex]; ok {
-            isBookmarked = true
-        }
+    	var renderedLines []string
+	for i, line := range visibleLines {
+		// Calculate real line index
+		realLineIndex := start + i
 
-        // 2. Wrap vs Horizontal Scroll
-        if m.wrap {
-             // WRAP MODE
-			 // 0. Highlight Matches (Priority)
-			 line = highlightMatches(line, m.filterText, m.regexMode)
-             line = highlightLine(line)
-             if isBookmarked {
-                 line = "🔖 " + line
-             }
-             
-             // 1. Apply Selection
-             if m.selectionStart != nil && m.selectionEnd != nil {
-                 startSel, endSel := *m.selectionStart, *m.selectionEnd
-                 if startSel.Y > endSel.Y || (startSel.Y == endSel.Y && startSel.X > endSel.X) {
-                     startSel, endSel = endSel, startSel
-                 }
-                  if realLineIndex >= startSel.Y && realLineIndex <= endSel.Y {
-                      cleanLine := stripAnsi(line)
-                      
-                      runes := []rune(cleanLine)
-                      
-                      startCol := 0
-                      if realLineIndex == startSel.Y {
-                          startCol = startSel.X
-                      }
-                      
-                      endCol := len(runes)
-                      if realLineIndex == endSel.Y {
-                          endCol = endSel.X + 1
-                      }
-                      
-                      if startCol < 0 { startCol = 0 }
-                      if startCol > len(runes) { startCol = len(runes) }
-                      if endCol < 0 { endCol = 0 }
-                      if endCol > len(runes) { endCol = len(runes) }
-                      
-                      if startCol < endCol {
-                          pre := string(runes[:startCol])
-                          sel := selectedStyle.Render(string(runes[startCol:endCol]))
-                          post := string(runes[endCol:])
-                          line = pre + sel + post
-                      }
-                  }
-             }
-             
+		isBookmarked := false
+		if _, ok := m.bookmarks[realLineIndex]; ok {
+			isBookmarked = true
+		}
 
-             
-             width := m.screenWidth
-             if width <= 0 { width = 80 }
-             wrapped := lipgloss.NewStyle().Width(width).Render(line)
-             renderedLines = append(renderedLines, wrapped)
+		// 2. Wrap vs Horizontal Scroll
+		if m.wrap {
+			// WRAP MODE
+			// 0. Highlight Matches (Priority)
+			line = highlightMatches(line, m.regex)
+			line = highlightLine(line)
+			if isBookmarked {
+				line = "🔖 " + line
+			}
 
-        } else {
-                // NO WRAP / HORIZONTAL SCROLL MODE
-        
-                // Convert to runes for safe slicing
-                rawLine := visibleLines[i]
-                rawRunes := []rune(rawLine)
+			// 1. Apply Selection
+			if m.selectionStart != nil && m.selectionEnd != nil {
+				startSel, endSel := *m.selectionStart, *m.selectionEnd
+				if startSel.Y > endSel.Y || (startSel.Y == endSel.Y && startSel.X > endSel.X) {
+					startSel, endSel = endSel, startSel
+				}
+				if realLineIndex >= startSel.Y && realLineIndex <= endSel.Y {
+					cleanLine := stripAnsi(line)
 
-                if m.xOffset < len(rawRunes) {
-                     end := m.xOffset + m.screenWidth
-                     if end > len(rawRunes) {
-                         end = len(rawRunes)
-                     }
-                     // Store the visible slice
-                     visiblePart := string(rawRunes[m.xOffset : end])
+					runes := []rune(cleanLine)
 
-                     // Highlight visible part
-					 visiblePart = highlightMatches(visiblePart, m.filterText, m.regexMode)
-                     line = highlightLine(visiblePart)
+					startCol := 0
+					if realLineIndex == startSel.Y {
+						startCol = startSel.X
+					}
 
-                     // 2. Selection Highlighting (Lazy)
-                     if m.selectionStart != nil && m.selectionEnd != nil {
-                         start, end := *m.selectionStart, *m.selectionEnd
-                         if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
-                             start, end = end, start
-                         }
+					endCol := len(runes)
+					if realLineIndex == endSel.Y {
+						endCol = endSel.X + 1
+					}
 
-                         // Check intersection
-                         if realLineIndex >= start.Y && realLineIndex <= end.Y {
-                             
-                              // Adjust X to visual
-                              visStart := 0
-                              if realLineIndex == start.Y {
-                                  visStart = start.X - m.xOffset
-                              }
-                              visEnd := len([]rune(visiblePart)) // default end of line
-                              if realLineIndex == end.Y {
-                                  visEnd = end.X + 1 - m.xOffset
-                              }
-                              
-                              // Clamp to 0..len
-                              if visStart < 0 { visStart = 0 }
-                              if visStart > len([]rune(visiblePart)) { visStart = len([]rune(visiblePart)) }
-                              if visEnd < 0 { visEnd = 0 }
-                              if visEnd > len([]rune(visiblePart)) { visEnd = len([]rune(visiblePart)) }
-                              
-                              if visStart < visEnd {
-                                  vpRunes := []rune(stripAnsi(line)) 
-                                  pre := string(vpRunes[:visStart])
-                                  sel := selectedStyle.Render(string(vpRunes[visStart:visEnd]))
-                                  post := string(vpRunes[visEnd:])
-                                  line = pre + sel + post
-                              }
-                         }
-                     }
-                     
-                     // 3. Apply Bookmark (Visual Only, after highlighting/selection)
-                     if isBookmarked {
-                         line = "🔖 " + line
-                     } else {
-                         line = "   " + line // Maintain alignment
-                     }
-                     
-                } else {
-                     line = "" // Scrolled past end
-                }
-        
-                renderedLines = append(renderedLines, line)
-        }
+					if startCol < 0 {
+						startCol = 0
+					}
+					if startCol > len(runes) {
+						startCol = len(runes)
+					}
+					if endCol < 0 {
+						endCol = 0
+					}
+					if endCol > len(runes) {
+						endCol = len(runes)
+					}
+
+					if startCol < endCol {
+						pre := string(runes[:startCol])
+						sel := selectedStyle.Render(string(runes[startCol:endCol]))
+						post := string(runes[endCol:])
+						line = pre + sel + post
+					}
+				}
+			}
+
+			width := m.screenWidth
+			if width <= 0 {
+				width = 80
+			}
+			wrapped := lipgloss.NewStyle().Width(width).Render(line)
+			renderedLines = append(renderedLines, wrapped)
+
+		} else {
+			// NO WRAP / HORIZONTAL SCROLL MODE
+
+			// Convert to runes for safe slicing
+			rawLine := visibleLines[i]
+			rawRunes := []rune(rawLine)
+
+			if m.xOffset < len(rawRunes) {
+				end := m.xOffset + m.screenWidth
+				if end > len(rawRunes) {
+					end = len(rawRunes)
+				}
+				// Store the visible slice
+				visiblePart := string(rawRunes[m.xOffset:end])
+
+				// Highlight visible part
+				visiblePart = highlightMatches(visiblePart, m.regex)
+				line = highlightLine(visiblePart)
+
+				// 2. Selection Highlighting (Lazy)
+				if m.selectionStart != nil && m.selectionEnd != nil {
+					start, end := *m.selectionStart, *m.selectionEnd
+					if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+						start, end = end, start
+					}
+
+					// Check intersection
+					if realLineIndex >= start.Y && realLineIndex <= end.Y {
+
+						// Adjust X to visual
+						visStart := 0
+						if realLineIndex == start.Y {
+							visStart = start.X - m.xOffset
+						}
+						visEnd := len([]rune(visiblePart)) // default end of line
+						if realLineIndex == end.Y {
+							visEnd = end.X + 1 - m.xOffset
+						}
+
+						// Clamp to 0..len
+						if visStart < 0 {
+							visStart = 0
+						}
+						if visStart > len([]rune(visiblePart)) {
+							visStart = len([]rune(visiblePart))
+						}
+						if visEnd < 0 {
+							visEnd = 0
+						}
+						if visEnd > len([]rune(visiblePart)) {
+							visEnd = len([]rune(visiblePart))
+						}
+
+						if visStart < visEnd {
+							vpRunes := []rune(stripAnsi(line))
+							pre := string(vpRunes[:visStart])
+							sel := selectedStyle.Render(string(vpRunes[visStart:visEnd]))
+							post := string(vpRunes[visEnd:])
+							line = pre + sel + post
+						}
+					}
+				}
+
+				// 3. Apply Bookmark (Visual Only, after highlighting/selection)
+				if isBookmarked {
+					line = "🔖 " + line
+				} else {
+					line = "   " + line // Maintain alignment
+				}
+
+			} else {
+				line = "" // Scrolled past end
+			}
+
+			renderedLines = append(renderedLines, line)
+		}
 
     }
     
@@ -1113,23 +1136,9 @@ func highlightLine(line string) string {
     return line
 }
 
-func highlightMatches(line, pattern string, isRegex bool) string {
-	if pattern == "" {
+func highlightMatches(line string, re *regexp.Regexp) string {
+	if re == nil {
 		return line
-	}
-
-	var re *regexp.Regexp
-	var err error
-
-	if isRegex {
-		re, err = regexp.Compile(pattern)
-	} else {
-		// Case insensitive literal match
-		re, err = regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
-	}
-
-	if err != nil {
-		return line // Return regex errors as is (or handle better?)
 	}
 
 	return re.ReplaceAllStringFunc(line, func(match string) string {
@@ -1137,11 +1146,10 @@ func highlightMatches(line, pattern string, isRegex bool) string {
 	})
 }
 
-
+var ansiRegex = regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\x07)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
 
 func stripAnsi(str string) string {
-	re := regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\x07)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
-	return re.ReplaceAllString(str, "")
+	return ansiRegex.ReplaceAllString(str, "")
 }
 
 func parseDate(s string) (time.Time, error) {
@@ -1166,8 +1174,7 @@ func extractDate(line string) (time.Time, bool) {
 	// Regex for YYYY-MM-DD
 	// We matched the YYYY-MM-DD part, but we want to capture time if present too.
 	// But `parseDate` handles the formats. We just need to find the substring that LOOKS like a date start.
-	re := regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]?(\d{2}:\d{2}:\d{2})?`)
-	loc := re.FindStringIndex(line)
+	loc := dateRegex.FindStringIndex(line)
 	if loc != nil {
 		s := line[loc[0]:loc[1]]
 		t, err := parseDate(s)
@@ -1178,14 +1185,16 @@ func extractDate(line string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-
+var dateRegex = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]?(\d{2}:\d{2}:\d{2})?`)
 
 func colorizeJSON(s string) string {
-	re := regexp.MustCompile(`"([^"]+)":`)
-	return re.ReplaceAllStringFunc(s, func(match string) string {
+	return jsonRegex.ReplaceAllStringFunc(s, func(match string) string {
 		return jsonKeyStyle.Render(match)
 	})
 }
+
+var jsonRegex = regexp.MustCompile(`"([^"]+)":`)
+
 
 
 
