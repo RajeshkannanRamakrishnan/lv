@@ -412,6 +412,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Re-apply filters to restore content if we were halfway typing
 				m.applyFilters(true)
 				return m, nil
+			case "ctrl+y":
+				m.copySelection()
+				return m, nil
 			}
 		}
 		m.textInput, cmd = m.textInput.Update(msg)
@@ -435,50 +438,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "y":
-
-			if m.selectionStart != nil && m.selectionEnd != nil {
-				start, end := *m.selectionStart, *m.selectionEnd
-				if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
-					start, end = end, start
-				}
-
-				lines := m.filteredLines
-				var selectedLines []string
-
-				for i := start.Y; i <= end.Y && i < len(lines); i++ {
-					line := stripAnsi(lines[i]) // Strip ANSI first
-					runes := []rune(line)
-					
-					startCol := 0
-					if i == start.Y {
-						startCol = start.X
-					}
-					
-					endCol := len(runes)
-					if i == end.Y {
-						endCol = end.X + 1 // Inclusive
-					}
-					
-					// Clamp
-					if startCol < 0 { startCol = 0 }
-					if startCol > len(runes) { startCol = len(runes) }
-					if endCol < 0 { endCol = 0 }
-					if endCol > len(runes) { endCol = len(runes) }
-					
-					if startCol < endCol {
-						selectedLines = append(selectedLines, string(runes[startCol:endCol]))
-					} else {
-                        // Empty line or invalid range
-                        selectedLines = append(selectedLines, "")
-                    }
-				}
-
-				text := strings.Join(selectedLines, "\n")
-				clipboard.WriteAll(text)
-
-				m.selectionStart = nil
-				m.selectionEnd = nil
-			}
+			m.copySelection()
 			return m, nil
 
 
@@ -1342,4 +1302,54 @@ func (m Model) helpView() string {
     content := lipgloss.JoinHorizontal(lipgloss.Top, col1, "    ", col2)
 
 	return boxStyle.Render(content)
+}
+
+func (m *Model) copySelection() {
+	if m.selectionStart != nil && m.selectionEnd != nil {
+		start, end := *m.selectionStart, *m.selectionEnd
+		// Normalize
+		if start.Y > end.Y || (start.Y == end.Y && start.X > end.X) {
+			start, end = end, start
+		}
+
+		lines := m.filteredLines
+		var selectedLines []string
+
+		for i := start.Y; i <= end.Y && i < len(lines); i++ {
+			line := stripAnsi(lines[i]) // Strip ANSI first
+			runes := []rune(line)
+			
+			startCol := 0
+			if i == start.Y {
+				startCol = start.X
+			}
+			
+			endCol := len(runes)
+			if i == end.Y {
+				endCol = end.X + 1 // Inclusive
+			}
+			
+			// Clamp
+			if startCol < 0 { startCol = 0 }
+			if startCol > len(runes) { startCol = len(runes) }
+			if endCol < 0 { endCol = 0 }
+			if endCol > len(runes) { endCol = len(runes) }
+			
+			if startCol < endCol {
+				selectedLines = append(selectedLines, string(runes[startCol:endCol]))
+			} else {
+				// Empty line or invalid range
+				selectedLines = append(selectedLines, "")
+			}
+		}
+
+		text := strings.Join(selectedLines, "\n")
+		clipboard.WriteAll(text)
+
+		// Clear selection after copy?
+		// User preference: might want to keep selection?
+		// Existing behavior was to clear. Let's keep it consistent.
+		m.selectionStart = nil
+		m.selectionEnd = nil
+	}
 }
