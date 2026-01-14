@@ -78,20 +78,34 @@ Please follow these steps to have your contribution considered by the maintainer
 
 ## Development Setup
 
-To set up your development environment:
+`lv` uses [mise](https://mise.jdx.dev/) for managing development environments and tasks.
 
-1.  **Prerequisites**: Ensure you have Go installed (version 1.20+ recommended).
+1.  **Prerequisites**:
+    *   Install `mise`: https://mise.jdx.dev/getting-started.html
+    *   Initialize mise (if not already done): `mise install`
+
 2.  **Clone the repository**:
     ```bash
     git clone https://github.com/rajeshkannanramakrishnan/lv.git
     cd lv
     ```
+
 3.  **Build**:
+    We use `mise` to run build tasks defined in `mise.toml`.
     ```bash
-    go build -o lv main.go
+    mise run build
     ```
+    This generates the `lv` binary in the current directory.
+
 4.  **Run Tests**:
     ```bash
+    mise run test
+    ```
+
+5.  **Manual Build/Test (Alternative)**:
+    If you don't want to use `mise`, you can use standard Go commands:
+    ```bash
+    go build -o lv main.go
     go test ./...
     ```
 
