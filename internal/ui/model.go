@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/atotto/clipboard"
     "github.com/fsnotify/fsnotify"
+    "github.com/mattn/go-runewidth"
+    "unicode/utf8"
     "os"
     "sort"
     "math"
@@ -125,7 +127,11 @@ type Model struct {
 
     // Streamer
     streamer *Streamer
+    
+    // Cache
+    layoutCache map[int][]string
 }
+
 
 func InitialModel(filename string, lines []string, reader io.Reader) Model {
     var streamer *Streamer
@@ -184,6 +190,7 @@ func InitialModel(filename string, lines []string, reader io.Reader) Model {
 		bookmarks:       make(map[int]struct{}),
 		showHelp:        false,
         streamer:        streamer,
+        layoutCache:     make(map[int][]string),
 	}
     m.applyFilters(true)
     return m
@@ -277,6 +284,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = msg.Height - verticalMarginHeight
 		}
         
+        // Invalidate cache on resize
+        m.layoutCache = make(map[int][]string)
+        
         // Return early to avoid m.viewport.Update(msg) resetting Width to msg.Width
         return m, nil 
 	}
@@ -303,13 +313,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			totalLines := len(m.filteredLines)
 			if lineIndex >= 0 && lineIndex < totalLines {
 				if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-					m.selecting = true
-					m.selectionStart = &Point{X: logicalX, Y: lineIndex}
-					m.selectionEnd = &Point{X: logicalX, Y: lineIndex}
-					// View update happens automatically on re-render
+                    targetLine, targetX := m.resolvePos(msg.X, msg.Y-m.headerHeight)
+                    if targetLine >= 0 && targetLine < totalLines {
+                        m.selecting = true
+                        m.selectionStart = &Point{X: targetX, Y: targetLine}
+                        m.selectionEnd = &Point{X: targetX, Y: targetLine}
+                    }
 				} else if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft && m.selecting {
-					m.selectionEnd = &Point{X: logicalX, Y: lineIndex}
-					// View update happens automatically on re-render
+                    targetLine, targetX := m.resolvePos(msg.X, msg.Y-m.headerHeight)
+                    if targetLine >= 0 && targetLine < totalLines {
+					    m.selectionEnd = &Point{X: targetX, Y: targetLine}
+                    }
 				} else if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
 					m.selecting = false
 				}
@@ -716,6 +730,7 @@ func (m *Model) applyFilters(resetView bool) {
 			}
 		}
 
+
 		// 3. Text/Regex Filtering
 		if m.filterText != "" {
 			if m.regexMode {
@@ -729,6 +744,9 @@ func (m *Model) applyFilters(resetView bool) {
 				}
 			}
 		}
+        
+        // Tab Normalization (Fixes offset drift in selection)
+        line = strings.ReplaceAll(line, "\t", "    ")
 
 		filtered = append(filtered, line)
 	}
@@ -786,6 +804,11 @@ func (m *Model) applyFilters(resetView bool) {
     }
     // Always clear viewport content as View() reconstructs it
     m.viewport.SetContent("") 
+    
+    // Clear height cache on filter change
+    if resetView {
+         m.layoutCache = make(map[int][]string)
+    }
 }
 
 func (m Model) View() string {
@@ -834,11 +857,7 @@ func (m Model) View() string {
 		if m.wrap {
 			// WRAP MODE
 			// 0. Highlight Matches (Priority)
-			line = highlightMatches(line, m.regex)
-			line = highlightLine(line)
-			if isBookmarked {
-				line = "🔖 " + line
-			}
+            line = m.getDecoratedLine(realLineIndex, line)
 
 			// 1. Apply Selection
 			if m.selectionStart != nil && m.selectionEnd != nil {
@@ -1352,4 +1371,166 @@ func (m *Model) copySelection() {
 		m.selectionStart = nil
 		m.selectionEnd = nil
 	}
+}
+
+func (m Model) getDecoratedLine(i int, line string) string {
+    line = highlightMatches(line, m.regex)
+    line = highlightLine(line)
+    if _, ok := m.bookmarks[i]; ok {
+        line = "🔖 " + line
+    }
+    return line
+}
+
+func (m Model) resolvePos(visualX, visualY int) (int, int) {
+    if !m.wrap {
+         // Default behavior (No Wrap)
+         logicalLine := m.yOffset + visualY
+         gutterOffset := 3
+         logicalX := m.xOffset + visualX - gutterOffset
+         if logicalX < 0 { logicalX = 0 }
+         return logicalLine, logicalX
+    }
+
+    width := m.screenWidth
+    if width <= 0 { width = 80 }
+    
+    currentVisualY := 0
+    targetLineIndex := -1
+    targetCharIndex := 0
+    
+    // Iterate through lines starting from scroll offset
+    // Check until we reach the visualY we clicked on
+    for i := 0; i+m.yOffset < len(m.filteredLines); i++ {
+        idx := m.yOffset + i
+        line := m.filteredLines[idx]
+        
+        // Use Cache to skip expensive wrapping
+        parts, cached := m.layoutCache[idx]
+        
+        var plain string
+            
+        if !cached {
+            // OPTIMIZATION: operate on plain string.
+            // Decoration adds ANSI (zero width) + potentially Bookmark (2 chars).
+            // Timestamps/JSON coloring are just ANSI.
+            // So wrapping 'plain' should match wrapping 'decorated'.
+            
+            plain = stripAnsi(line)
+            if _, ok := m.bookmarks[idx]; ok {
+                plain = "🔖 " + plain
+            }
+        
+            // Wrap plain text
+            wrapped := lipgloss.NewStyle().Width(width).Render(plain)
+            parts = strings.Split(wrapped, "\n")
+            m.layoutCache[idx] = parts
+        }
+        
+        h := len(parts)
+        if visualY < currentVisualY + h {
+            // Found the line!
+            targetLineIndex = idx
+            
+            // Need plain string now
+            if plain == "" {
+                 plain = stripAnsi(line)
+                 if _, ok := m.bookmarks[idx]; ok {
+                    plain = "🔖 " + plain
+                 }
+            }
+            
+            // Reconstruct offset by matching parts against original plain line
+            originalClean := plain // This is what we built above
+            currentByteOffset := 0
+            currentRuneOffset := 0
+            
+            localRow := visualY - currentVisualY
+            
+            // Iterate up to localRow to find start index of current line segment
+            for k := 0; k < localRow; k++ {
+                part := parts[k]
+                
+                // Safety check: if we already exceeded length, stop
+                if currentByteOffset >= len(originalClean) {
+                    break
+                }
+                
+                matchIdx := strings.Index(originalClean[currentByteOffset:], part)
+                if matchIdx == -1 {
+                    // Fallbck: assume it was just skipped or expanded?
+                    // Just advance by part length to be safe-ish
+                    currentByteOffset += len(part)
+                    currentRuneOffset += utf8.RuneCountInString(part)
+                } else {
+                    // 1. Add skipped characters (e.g. spaces eaten by wrap)
+                    if matchIdx > 0 {
+                        skippedBytes := matchIdx
+                        skippedPart := originalClean[currentByteOffset : currentByteOffset+skippedBytes]
+                        currentRuneOffset += utf8.RuneCountInString(skippedPart)
+                        currentByteOffset += skippedBytes
+                    }
+                    
+                    // 2. Add the part itself
+                    currentByteOffset += len(part)
+                    currentRuneOffset += utf8.RuneCountInString(part)
+                }
+            }
+            
+            // Find start of current line (target line)
+            currentPart := parts[localRow]
+            startOfLineRuneIdx := currentRuneOffset
+            
+            if currentByteOffset < len(originalClean) {
+                 matchIdx := strings.Index(originalClean[currentByteOffset:], currentPart)
+                 if matchIdx != -1 {
+                     // Add any skipped chars before this line starts
+                     skippedPart := originalClean[currentByteOffset : currentByteOffset+matchIdx]
+                     startOfLineRuneIdx += utf8.RuneCountInString(skippedPart)
+                 }
+            }
+            
+            // Add current visual X logic (runewidth)
+            currentSegRunes := []rune(currentPart)
+            
+            // Iterate runes to find which one covers visualX
+            cw := 0
+            foundIdx := len(currentSegRunes)
+            
+            for rIdx, r := range currentSegRunes {
+                w := runewidth.RuneWidth(r)
+                if cw + w > visualX {
+                    foundIdx = rIdx
+                    break
+                }
+                cw += w
+            }
+            
+            // If bookmarked, the first 2 chars are "🔖 " (idx 0, 1? rune length 2?)
+            // Bookmark is "🔖 " -> Rune count: 2 (Bookmark char + space).
+            // We want index into the LOG LINE (without bookmark).
+            
+            finalIdx := startOfLineRuneIdx + foundIdx
+            
+            if _, ok := m.bookmarks[idx]; ok {
+                 // Original plain was "🔖 " + content
+                 // We want index into content.
+                 // "🔖 " is 2 runes?
+                 bookmarkPrefixLen := utf8.RuneCountInString("🔖 ")
+                 finalIdx -= bookmarkPrefixLen
+                 if finalIdx < 0 { finalIdx = 0 }
+            }
+            
+            targetCharIndex = finalIdx
+            return targetLineIndex, targetCharIndex
+        }
+        
+        currentVisualY += h
+        
+        if currentVisualY > visualY {
+             break 
+        }
+    }
+    
+    return -1, -1
 }

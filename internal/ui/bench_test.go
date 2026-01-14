@@ -47,3 +47,18 @@ func BenchmarkDirectSlice(b *testing.B) {
         _ = lines[start:end]
     }
 }
+
+func BenchmarkResolvePos(b *testing.B) {
+    // Setup model with long lines
+    longLine := strings.Repeat("A long line with words and spaces to trigger lipgloss wrapping several times over. ", 50) // ~3000 chars
+    lines := []string{longLine}
+    m := InitialModel("bench.log", lines, nil)
+    m.screenWidth = 80
+    m.wrap = true
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        // Resolve a click near the end
+        _, _ = m.resolvePos(40, 10) 
+    }
+}
