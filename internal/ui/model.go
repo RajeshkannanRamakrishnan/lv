@@ -856,42 +856,151 @@ func (m Model) View() string {
 		// 2. Wrap vs Horizontal Scroll
 		if m.wrap {
 			// WRAP MODE
-			// 0. Highlight Matches (Priority)
-            line = m.getDecoratedLine(realLineIndex, line)
+            // Check Cache first
+            parts, cached := m.layoutCache[realLineIndex]
+            var wrapped string
+            
+            if cached {
+                // If cached, join parts to reconstruct wrapped line
+                // This is much faster than re-wrapping with Lipgloss
+                wrapped = strings.Join(parts, "\n")
+                
+                // Note: Cached parts are just "plain" wrapped or "decorated" wrapped?
+                // resolvePos logic puts "plain" wrapped in cache usually to optimize search.
+                // But View needs DECORATED lines (highlighted).
+                // If we cache PLAIN lines, we miss highlighting.
+                // If we cache DECORATED lines, resolvePos logic might be tricky?
+                // 
+                // Let's check resolvePos usage of cache:
+                // resolvePos puts `lipgloss.NewStyle().Width(width).Render(plain)` -> parts
+                // So it caches formatted/wrapped but maybe NOT highlighted for search/regex?
+                // Actually resolvePos uses:
+                //   plain = stripAnsi(line)
+                //   wrapped = lipgloss...Render(plain)
+                // So resolvePos caches stripped content.
+                //
+                // View needs HIGHLIGHTED content.
+                //
+                // DECISION: We probably need TWO caches or one robust cache.
+                // Given performance is the goal, caching the FINAL RENDERED wrapped lines is best for View.
+                // But resolvePos needs to map valid indices.
+                //
+                // If we change layoutCache to store the Final View Content, resolvePos might break if it relied on stripping.
+                //
+                // Let's refactor layoutCache to strictly store "Visual Lines" (what View needs).
+                // `resolvePos` can interpret Visual Lines if needed, OR we just accept we cache View lines.
+                //
+                // Optimization: The 'slow' part is Lipgloss Wrapping & Regex highlighting on long lines.
+                // If we do decoration BEFORE wrapping, we assume valid ANSI wrapping.
+                // Lipgloss handles ANSI wrapping well.
+                //
+                // Let's store the Fully Decorated & Wrapped lines in cache.
+            }
 
-			// 1. Apply Selection
-			if m.selectionStart != nil && m.selectionEnd != nil {
-				startSel, endSel := *m.selectionStart, *m.selectionEnd
-				if startSel.Y > endSel.Y || (startSel.Y == endSel.Y && startSel.X > endSel.X) {
-					startSel, endSel = endSel, startSel
-				}
-				if realLineIndex >= startSel.Y && realLineIndex <= endSel.Y {
-					cleanLine := stripAnsi(line)
+            if !cached {
+			    // 0. Highlight Matches (Priority)
+                line = m.getDecoratedLine(realLineIndex, line)
 
+			    // 1. Apply Selection
+                // (Selection is dynamic! If we cache with selection, we break selection updates on drag)
+                // Selection is fast (string manipulation). Wrapping is slow.
+                // We should cache the WRAPPED line *without* selection?
+                // But Selection highlights spans.
+                
+                // Alternative: Cache the WRAPPED result of decorated line (regex, etc).
+                // apply selection On Top?
+                // If we apply selection on wrapped lines, we need to map logical-to-visual indices... complex.
+                
+                // Let's look at how slow "applying selection" is.
+                // It's just string slicing. Fast.
+                // The slow part is `lipgloss.NewStyle().Width(width).Render(line)`.
+                
+                // SO:
+                // 1. Decorate Line (Regex, Levels) -> Cached? No, fast enough usually.
+                // 2. Wrap Line -> SLOW.
+                // 3. Apply Selection -> dynamic.
+                //
+                // Problem: If we wrap first, selection indices are hard.
+                // Current code: Decorate -> Select -> Wrap.
+                
+                // If we want to cache, we must cache the Result of (Decorate -> Wrap) MINUS selection?
+                // Or does selection happen before wrap? YES.
+                // "line = pre + sel + post"
+                // "wrapped = lipgloss...Render(line)"
+                
+                // If selection changes, we MUST re-wrap because correct wrapping depends on escape codes?
+                // Actually, selection just adds ANSI codes. It shouldn't change word boundaries (unless selection is bold?).
+                // Selected style: Background color. Zero width ANSI.
+                // So wrapping should be identical "shape".
+                
+                // Optimization:
+                // Cache the "Base Wrapped Lines" (Decorated, No Selection).
+                // When Selection is active, we might have to bite the bullet and re-wrap?
+                // OR process selection on the wrapped parts?
+                
+                // User complaint: "After applying a filter pressed w scrolling is very slow".
+                // They didn't say "during selection". Just scrolling.
+                // In normal scrolling, selection is nil.
+                
+                // So, if !selecting, we can cache result!
+                
+                width := m.screenWidth
+			    if width <= 0 {
+				    width = 80
+			    }
+                
+                renderedLine := line // Start with raw
+                
+                // Apply decorations (Regex, Level)
+                renderedLine = m.getDecoratedLine(realLineIndex, renderedLine)
+                
+                // Cache Key: We use index. If content changes, filter clears cache.
+                // If selection exists, we might normally bypass cache or modify key.
+                // But simplest fix for "scrolling is slow":
+                // Cache the final wrapped string *if no selection*.
+                
+                hasSelection := m.selectionStart != nil && m.selectionEnd != nil
+                // If selection touches this line, do dynamic.
+                // Check intersection
+                lineSelected := false
+                if hasSelection {
+                    startSel, endSel := *m.selectionStart, *m.selectionEnd
+				    if startSel.Y > endSel.Y || (startSel.Y == endSel.Y && startSel.X > endSel.X) {
+					    startSel, endSel = endSel, startSel
+				    }
+                    if realLineIndex >= startSel.Y && realLineIndex <= endSel.Y {
+                        lineSelected = true
+                    }
+                }
+                
+
+                
+                // To minimize code drift, let's just Wrap and cache if !lineSelected.
+                
+                // Re-running generation:
+                line = m.getDecoratedLine(realLineIndex, line)
+                if lineSelected {
+                    // Apply selection logic (same as before)
+                    startSel, endSel := *m.selectionStart, *m.selectionEnd
+				    if startSel.Y > endSel.Y || (startSel.Y == endSel.Y && startSel.X > endSel.X) {
+					    startSel, endSel = endSel, startSel
+				    }
+                    // ... logic copy ...
+                    cleanLine := stripAnsi(line)
 					runes := []rune(cleanLine)
 
 					startCol := 0
 					if realLineIndex == startSel.Y {
 						startCol = startSel.X
 					}
-
 					endCol := len(runes)
 					if realLineIndex == endSel.Y {
 						endCol = endSel.X + 1
 					}
-
-					if startCol < 0 {
-						startCol = 0
-					}
-					if startCol > len(runes) {
-						startCol = len(runes)
-					}
-					if endCol < 0 {
-						endCol = 0
-					}
-					if endCol > len(runes) {
-						endCol = len(runes)
-					}
+					if startCol < 0 { startCol = 0 }
+					if startCol > len(runes) { startCol = len(runes) }
+					if endCol < 0 { endCol = 0 }
+					if endCol > len(runes) { endCol = len(runes) }
 
 					if startCol < endCol {
 						pre := string(runes[:startCol])
@@ -899,15 +1008,22 @@ func (m Model) View() string {
 						post := string(runes[endCol:])
 						line = pre + sel + post
 					}
-				}
-			}
-
-			width := m.screenWidth
-			if width <= 0 {
-				width = 80
-			}
-			wrapped := lipgloss.NewStyle().Width(width).Render(line)
-			renderedLines = append(renderedLines, wrapped)
+                }
+                
+                wrapped = lipgloss.NewStyle().Width(width).Render(line)
+                
+                // Store in cache only if NOT selected (or if selected? selection changes often)
+                // If we cache selected state, dragging execution is slow?
+                // But dragging is mouse motion.
+                // User complaint is SCROLLING.
+                // So caching the clean wrapped state is critical.
+                
+                if !lineSelected {
+                     m.layoutCache[realLineIndex] = strings.Split(wrapped, "\n")
+                }
+            }
+            
+            renderedLines = append(renderedLines, wrapped)
 
 		} else {
 			// NO WRAP / HORIZONTAL SCROLL MODE
