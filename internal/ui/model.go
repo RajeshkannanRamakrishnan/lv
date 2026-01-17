@@ -574,18 +574,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         // Bookmarks
         case "m":
              // Toggle bookmark at current YOffset (top visible line)
-             // Or selection? Usually "mark current line".
-             // We use m.viewport.YOffset.
-             row := m.viewport.YOffset
+             row := m.yOffset
              if _, exists := m.bookmarks[row]; exists {
                  delete(m.bookmarks, row)
              } else {
                  m.bookmarks[row] = struct{}{}
              }
+             // Invalidate cache for this line to ensure layout updates (e.g. bookmark icon vs gutter)
+             delete(m.layoutCache, row)
              
         case "n":
              // Jump to next bookmark > current YOffset
-             start := m.viewport.YOffset + 1
+             start := m.yOffset + 1
              next := -1
              minDist := int(^uint(0) >> 1)
              
@@ -600,12 +600,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
              }
              
              if next != -1 {
-                 m.viewport.YOffset = next
+                 m.yOffset = next
              }
              
         case "N":
              // Jump to prev bookmark < current YOffset
-             start := m.viewport.YOffset - 1
+             start := m.yOffset - 1
              prev := -1
              minDist := int(^uint(0) >> 1)
              
@@ -620,7 +620,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
              }
              
              if prev != -1 {
-                 m.viewport.YOffset = prev
+                 m.yOffset = prev
              }
 		}
 
