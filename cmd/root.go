@@ -1,16 +1,43 @@
 package cmd
 
 import (
-	"fmt"
-    "io"
 	"bufio"
+	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/rajeshkannanramakrishnan/lv/internal/ui"
 	"github.com/spf13/cobra"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+const largeFileThreshold = 10 * 1024 * 1024 // 10MB
+
+func readLines(r io.Reader) ([]string, error) {
+	br := bufio.NewReader(r)
+	lines := make([]string, 0, 1024)
+
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+
+		if len(line) > 0 {
+			line = strings.TrimSuffix(line, "\n")
+			line = strings.TrimSuffix(line, "\r")
+			lines = append(lines, line)
+		}
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	return lines, nil
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "lv [file]",
@@ -25,17 +52,17 @@ Key Features:
   - Follow mode (tail -f) with auto-scroll.
   - Mouse support for scrolling and selection.
   - Rich keyboard shortcuts (vim-like navigation).`,
-    Example: `  # Open a local file
+	Example: `  # Open a local file
   lv app.log
 
   # Pipe logs from stdin
   kubectl logs -f my-pod | lv
   docker logs my-container | lv
   cat large.log | lv`,
-	Args:  cobra.MaximumNArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		var lines []string
-        var reader io.Reader
+		var reader io.Reader
 
 		if len(args) > 0 {
 			// Read from file
@@ -45,28 +72,28 @@ Key Features:
 				os.Exit(1)
 			}
 			defer f.Close()
-            
-            // For now, keep loading files into memory as per existing logic
-            // (user request: "shouldn't break other changes")
-            // We could stream files too, but let's be safe and keep large file loading behavior
-            // which currently uses the lines slice.
-            // Wait, root.go logic was:
-			scanner := bufio.NewScanner(f)
-            // Increase buffer for large lines
-            buf := make([]byte, 0, 64*1024)
-            scanner.Buffer(buf, 1024*1024)
-            
-			for scanner.Scan() {
-				lines = append(lines, scanner.Text())
+
+			info, err := f.Stat()
+			if err != nil {
+				fmt.Printf("Error reading file info: %v\n", err)
+				os.Exit(1)
 			}
-            if err := scanner.Err(); err != nil {
-                 fmt.Printf("Error reading file: %v\n", err)
-            }
+
+			if info.Size() > largeFileThreshold {
+				// Stream large files to avoid startup stalls and memory spikes.
+				reader = f
+			} else {
+				lines, err = readLines(f)
+				if err != nil {
+					fmt.Printf("Error reading file: %v\n", err)
+					os.Exit(1)
+				}
+			}
 		} else {
 			// Check if stdin has data
 			stat, _ := os.Stdin.Stat()
 			if (stat.Mode() & os.ModeCharDevice) == 0 {
-                // Stdin is a pipe. Pass it to the model for streaming.
+				// Stdin is a pipe. Pass it to the model for streaming.
 				reader = os.Stdin
 			} else {
 				// No file and no stdin
@@ -74,11 +101,11 @@ Key Features:
 				os.Exit(0)
 			}
 		}
-        
-        filename := "Stdin"
-        if len(args) > 0 {
-            filename = args[0]
-        }
+
+		filename := "Stdin"
+		if len(args) > 0 {
+			filename = args[0]
+		}
 
 		p := tea.NewProgram(ui.InitialModel(filename, lines, reader), tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
