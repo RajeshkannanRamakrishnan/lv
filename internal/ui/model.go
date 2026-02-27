@@ -133,7 +133,16 @@ type Model struct {
 func InitialModel(filename string, lines []string, reader io.Reader) Model {
 	var streamer *Streamer
 	if reader != nil {
-		streamer = NewStreamer(reader)
+		cfg := StreamerConfig{
+			BatchLines: 200,
+			FlushEvery: 50 * time.Millisecond,
+		}
+		// File startup backfill should favor throughput over ultra-low latency.
+		if filename != "Stdin" {
+			cfg.BatchLines = 5000
+			cfg.FlushEvery = 100 * time.Millisecond
+		}
+		streamer = NewStreamerWithConfig(reader, cfg)
 	}
 
 	ti := textinput.New()
@@ -215,10 +224,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle error?
 		} else if msg.NewContent != "" {
 			// Append new content
-			newLines := strings.Split(msg.NewContent, "\n")
-			// Handle edge case where last line was incomplete?
-			// For simplicity, just append. Ideally we handle partial lines.
-
+			newLines := splitIncomingContent(msg.NewContent)
 			m.appendIncomingLines(newLines)
 
 			m.fileSize = msg.NewOffset
@@ -706,6 +712,15 @@ func (m *Model) appendIncomingLines(newLines []string) {
 
 	// Keep current viewport state while recomputing.
 	m.applyFilters(false)
+}
+
+func splitIncomingContent(content string) []string {
+	lines := strings.Split(content, "\n")
+	// File appends usually end with '\n', which creates a trailing empty element.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 func (m *Model) applyFilters(resetView bool) {

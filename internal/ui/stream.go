@@ -8,6 +8,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const (
+	defaultStreamBatchLines = 1000
+	defaultStreamFlushEvery = 50 * time.Millisecond
+)
+
 // LogChunkMsg can carry a chunk of raw string or a slice of lines.
 // For efficient TUI updates, sending a batch of lines is preferred.
 type LogChunkMsg struct {
@@ -21,7 +26,26 @@ type Streamer struct {
 	err   chan error
 }
 
+type StreamerConfig struct {
+	BatchLines int
+	FlushEvery time.Duration
+}
+
 func NewStreamer(r io.Reader) *Streamer {
+	return NewStreamerWithConfig(r, StreamerConfig{
+		BatchLines: defaultStreamBatchLines,
+		FlushEvery: defaultStreamFlushEvery,
+	})
+}
+
+func NewStreamerWithConfig(r io.Reader, cfg StreamerConfig) *Streamer {
+	if cfg.BatchLines <= 0 {
+		cfg.BatchLines = defaultStreamBatchLines
+	}
+	if cfg.FlushEvery <= 0 {
+		cfg.FlushEvery = defaultStreamFlushEvery
+	}
+
 	s := &Streamer{
 		lines: make(chan []string),
 		err:   make(chan error),
@@ -38,7 +62,7 @@ func NewStreamer(r io.Reader) *Streamer {
 			batch = append(batch, scanner.Text())
 
 			// Flush if batch is big enough or time passed
-			if len(batch) >= 100 || time.Since(lastSend) > 50*time.Millisecond {
+			if len(batch) >= cfg.BatchLines || time.Since(lastSend) > cfg.FlushEvery {
 				s.lines <- batch
 				batch = nil // Reset
 				lastSend = time.Now()
