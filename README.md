@@ -50,6 +50,13 @@ go build -o lv main.go
 sudo mv lv /usr/local/bin/
 ```
 
+### Option 4: Homebrew (macOS)
+
+```bash
+brew tap RajeshkannanRamakrishnan/homebrew-lv
+brew install lv
+```
+
 ## Usage
 
 **Open a file:**
