@@ -13,7 +13,7 @@ builds:
       - arm64
     binary: lv
     ldflags:
-      - -s -w
+      - -s -w -X github.com/rajeshkannanramakrishnan/lv/cmd.Version={{ .Version }}
 
 archives:
   - format: tar.gz

@@ -15,6 +15,9 @@ import (
 
 const largeFileThreshold = 10 * 1024 * 1024 // 10MB
 
+// Version is set at build time via -ldflags. Defaults to dev for local builds.
+var Version = "dev"
+
 func readLines(r io.Reader) ([]string, error) {
 	br := bufio.NewReader(r)
 	lines := make([]string, 0, 1024)
@@ -41,6 +44,7 @@ func readLines(r io.Reader) ([]string, error) {
 
 var rootCmd = &cobra.Command{
 	Use:   "lv [file]",
+	Version: Version,
 	Short: "High-performance TUI for log analysis",
 	Long: `lv is a blazing fast terminal-based log viewer designed for developers and DevOps.
 

@@ -642,11 +642,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.yOffset = len(m.filteredLines) - m.viewport.Height
 		}
 	case tea.MouseMsg:
-		switch msg.Type {
-		case tea.MouseWheelUp:
-			m.yOffset--
-		case tea.MouseWheelDown:
-			m.yOffset++
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			if msg.Shift || msg.Alt || msg.Ctrl {
+				m.xOffset -= 5
+				if m.xOffset < 0 {
+					m.xOffset = 0
+				}
+			} else {
+				m.yOffset--
+			}
+		case tea.MouseButtonWheelDown:
+			if msg.Shift || msg.Alt || msg.Ctrl {
+				m.xOffset += 5
+			} else {
+				m.yOffset++
+			}
+		case tea.MouseButtonWheelLeft:
+			m.xOffset -= 5
+			if m.xOffset < 0 {
+				m.xOffset = 0
+			}
+		case tea.MouseButtonWheelRight:
+			m.xOffset += 5
 		}
 	}
 
@@ -1381,6 +1399,7 @@ func (m Model) footerView() string {
 
 	// Line Counts
 	status += fmt.Sprintf("│ Lines: %d/%d ", len(m.filteredLines), len(m.originalLines))
+	status += fmt.Sprintf("│ X: %d ", m.xOffset)
 
 	if m.startDate != nil {
 		status += fmt.Sprintf("│ Start: %s ", m.startDate.Format("15:04"))
@@ -1451,6 +1470,7 @@ func (m Model) helpView() string {
 		{"t", "Toggle Timeline"},
 		{"m", "Toggle Bookmark"},
 		{"l / h", "Scroll Right / Left"},
+		{"Shift+Wheel", "Scroll Right / Left"},
 		{"r", "Reload File"},
 	}
 
